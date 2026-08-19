@@ -7,48 +7,50 @@ type Member = { employeeId: string; name: string };
 type GroupBuy = {
   id: string;
   name: string;
-  start: string;
-  end: string;
-  status: "open" | "closed" | "finalized";
-  participants: number;
+  description: string | null;
+  start_at: string;
+  end_at: string;
+  status: "open" | "closed" | "reviewing" | "finalized";
 };
 
-const demoGroups: GroupBuy[] = [
-  {
-    id: "chicken-breast",
-    name: "雞胸肉團購",
-    start: "2026-08-20 09:00",
-    end: "2026-08-25 18:00",
-    status: "open",
-    participants: 0,
-  },
-  {
-    id: "bagel",
-    name: "貝果團購",
-    start: "2026-08-22 09:00",
-    end: "2026-08-27 18:00",
-    status: "open",
-    participants: 0,
-  },
-  {
-    id: "snacks",
-    name: "零食團購",
-    start: "2026-08-10 09:00",
-    end: "2026-08-18 18:00",
-    status: "finalized",
-    participants: 25,
-  },
-];
+function formatDate(value: string) {
+  return new Date(value).toLocaleString("zh-TW", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
 
 export default function Home() {
   const [member, setMember] = useState<Member | null>(null);
   const [showMemberForm, setShowMemberForm] = useState(false);
   const [employeeId, setEmployeeId] = useState("");
   const [name, setName] = useState("");
+  const [groups, setGroups] = useState<GroupBuy[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  async function loadGroups() {
+    try {
+      const response = await fetch("/api/group-buys", { cache: "no-store" });
+      const result = await response.json();
+      if (response.ok) setGroups(result.data ?? []);
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
     const saved = localStorage.getItem("company-group-buy-member");
-    if (saved) setMember(JSON.parse(saved));
+    if (saved) {
+      try {
+        setMember(JSON.parse(saved));
+      } catch {
+        localStorage.removeItem("company-group-buy-member");
+      }
+    }
+    loadGroups();
   }, []);
 
   function saveMember() {
@@ -67,6 +69,9 @@ export default function Home() {
     setShowMemberForm(true);
   }
 
+  const openGroups = groups.filter((group) => group.status === "open");
+  const pastGroups = groups.filter((group) => group.status !== "open");
+
   return (
     <main className="min-h-screen px-5 py-8 md:px-10">
       <div className="mx-auto max-w-5xl">
@@ -83,43 +88,39 @@ export default function Home() {
                 <div className="font-semibold">{member.name}</div>
                 <div className="text-xs text-[var(--muted)]">員工編號：{member.employeeId}</div>
               </div>
-              <button onClick={switchMember} className="rounded-xl border border-[var(--border)] bg-white px-3 py-2 text-sm">
-                切換使用者
-              </button>
+              <button onClick={switchMember} className="rounded-xl border border-[var(--border)] bg-white px-3 py-2 text-sm">切換使用者</button>
             </div>
           ) : (
-            <button onClick={() => setShowMemberForm(true)} className="rounded-xl bg-[var(--accent)] px-5 py-3 font-semibold text-white">
-              首次使用／設定身分
-            </button>
+            <button onClick={() => setShowMemberForm(true)} className="rounded-xl bg-[var(--accent)] px-5 py-3 font-semibold text-white">首次使用／設定身分</button>
           )}
         </header>
 
         <section className="mb-10">
-          <div className="mb-4 flex items-end justify-between">
-            <div>
-              <h2 className="text-xl font-bold">進行中的團購</h2>
-              <p className="mt-1 text-sm text-[var(--muted)]">選擇團購後即可查看商品與目前價格。</p>
-            </div>
+          <div className="mb-4">
+            <h2 className="text-xl font-bold">進行中的團購</h2>
+            <p className="mt-1 text-sm text-[var(--muted)]">選擇團購後即可查看商品與目前價格。</p>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-2">
-            {demoGroups.filter((g) => g.status === "open").map((group) => (
-              <article key={group.id} className="rounded-3xl border border-[var(--border)] bg-white p-6 shadow-sm">
-                <div className="mb-5 flex items-start justify-between gap-4">
-                  <div>
-                    <span className="inline-flex rounded-full bg-[#e8f3ef] px-3 py-1 text-xs font-semibold text-[var(--accent)]">訂購中</span>
-                    <h3 className="mt-3 text-xl font-bold">{group.name}</h3>
+          {loading ? (
+            <div className="rounded-3xl border border-[var(--border)] bg-white p-8 text-center text-sm text-[var(--muted)]">正在讀取團購...</div>
+          ) : openGroups.length === 0 ? (
+            <div className="rounded-3xl border border-dashed border-[var(--border)] bg-white p-8 text-center text-sm text-[var(--muted)]">目前沒有進行中的團購。</div>
+          ) : (
+            <div className="grid gap-4 md:grid-cols-2">
+              {openGroups.map((group) => (
+                <article key={group.id} className="rounded-3xl border border-[var(--border)] bg-white p-6 shadow-sm">
+                  <span className="inline-flex rounded-full bg-[#e8f3ef] px-3 py-1 text-xs font-semibold text-[var(--accent)]">訂購中</span>
+                  <h3 className="mt-3 text-xl font-bold">{group.name}</h3>
+                  {group.description && <p className="mt-2 text-sm text-[var(--muted)]">{group.description}</p>}
+                  <div className="mt-5 space-y-2 text-sm text-[var(--muted)]">
+                    <p>開始：{formatDate(group.start_at)}</p>
+                    <p>截止：{formatDate(group.end_at)}</p>
                   </div>
-                  <span className="text-sm text-[var(--muted)]">{group.participants} 人</span>
-                </div>
-                <div className="space-y-2 text-sm text-[var(--muted)]">
-                  <p>開始：{group.start}</p>
-                  <p>截止：{group.end}</p>
-                </div>
-                <button className="mt-6 w-full rounded-xl bg-[var(--accent)] px-4 py-3 font-semibold text-white">進入團購</button>
-              </article>
-            ))}
-          </div>
+                  <button className="mt-6 w-full rounded-xl bg-[var(--accent)] px-4 py-3 font-semibold text-white">進入團購</button>
+                </article>
+              ))}
+            </div>
+          )}
         </section>
 
         <section>
@@ -128,20 +129,28 @@ export default function Home() {
             <p className="mt-1 text-sm text-[var(--muted)]">團購結束後，最終結果會保留在原團購頁面。</p>
           </div>
           <div className="overflow-hidden rounded-3xl border border-[var(--border)] bg-white">
-            {demoGroups.filter((g) => g.status === "finalized").map((group) => (
-              <div key={group.id} className="flex flex-col gap-3 border-b border-[var(--border)] p-5 last:border-0 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="font-semibold">{group.name}</h3>
-                    <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs text-[var(--muted)]">已結算</span>
+            {pastGroups.length === 0 ? (
+              <div className="p-8 text-center text-sm text-[var(--muted)]">目前還沒有歷史團購。</div>
+            ) : (
+              pastGroups.map((group) => (
+                <div key={group.id} className="flex flex-col gap-3 border-b border-[var(--border)] p-5 last:border-0 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-semibold">{group.name}</h3>
+                      <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs text-[var(--muted)]">{group.status === "finalized" ? "已結算" : "已截止"}</span>
+                    </div>
+                    <p className="mt-1 text-sm text-[var(--muted)]">截止：{formatDate(group.end_at)}</p>
                   </div>
-                  <p className="mt-1 text-sm text-[var(--muted)]">參與人數：{group.participants} 人</p>
+                  <button className="rounded-xl border border-[var(--border)] px-4 py-2 text-sm font-medium">查看團購</button>
                 </div>
-                <button className="rounded-xl border border-[var(--border)] px-4 py-2 text-sm font-medium">查看最終結果</button>
-              </div>
-            ))}
+              ))
+            )}
           </div>
         </section>
+
+        <footer className="mt-8 text-center">
+          <a href="/admin" className="text-xs text-[var(--muted)] hover:underline">管理員入口</a>
+        </footer>
       </div>
 
       {showMemberForm && (
