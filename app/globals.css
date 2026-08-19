@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f7f7f5;
+  --foreground: #202020;
+  --muted: #6b6b67;
+  --border: #e5e5df;
+  --card: #ffffff;
+  --accent: #1f6f5b;
+}
+
+* { box-sizing: border-box; }
+
+html { background: var(--background); }
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+}
+
+button, input { font: inherit; }
+
+button { cursor: pointer; }
