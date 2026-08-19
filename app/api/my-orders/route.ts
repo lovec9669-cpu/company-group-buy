@@ -16,9 +16,7 @@ export async function GET(request: Request) {
       .single();
     if (memberError || !member) return NextResponse.json({ data: [] });
 
-    // 與管理員後台使用同一個團購狀態來源。
-    // 只要團購時間已到，這裡也會立即把 open 更新成 closed，
-    // 避免首頁與後台因為讀取先後順序不同而顯示不同狀態。
+    // 先依照後台相同規則同步團購狀態。
     const { data: openGroups, error: openGroupsError } = await supabase
       .from("group_buys")
       .select("id,end_at")
@@ -38,6 +36,7 @@ export async function GET(request: Request) {
       if (closeError) throw closeError;
     }
 
+    // 取得這位員工自己的訂單。
     const { data: orders, error: orderError } = await supabase
       .from("orders")
       .select("id,group_buy_id,created_at")
@@ -45,11 +44,19 @@ export async function GET(request: Request) {
       .order("created_at", { ascending: false });
     if (orderError) throw orderError;
 
-    const result = [];
+    const result: Array<{
+      id: string;
+      group_buy_id: string;
+      created_at: string;
+      group: { id: string; name: string; description: string | null; start_at: string; end_at: string; status: string } | null;
+      items: { productId: string; productName: string; unit: string; quantity: number; finalAmount: number | null }[];
+      isFinalized: boolean;
+    }> = [];
+
     for (const order of orders ?? []) {
       const { data: group } = await supabase
         .from("group_buys")
-        .select("id,name,start_at,end_at,status")
+        .select("id,name,description,start_at,end_at,status")
         .eq("id", order.group_buy_id)
         .single();
 
@@ -77,10 +84,40 @@ export async function GET(request: Request) {
         ...order,
         group,
         items: orderItems,
-        // 最終金額只有後台發布 finalized 後才算正式完成。
         isFinalized: group?.status === "finalized",
       });
     }
+
+    // 首頁的「截止的訂單／歷史訂單」要與後台的團購清單同步。
+    // 即使某位員工沒有在該團購下單，團購本身仍應出現在對應區域，
+    // 避免首頁只靠 orders 表而漏掉後台已經截止或完成的團購。
+    const { data: closedAndHistoryGroups, error: groupListError } = await supabase
+      .from("group_buys")
+      .select("id,name,description,start_at,end_at,status,created_at")
+      .in("status", ["closed", "reviewing", "finalized"])
+      .order("end_at", { ascending: false });
+    if (groupListError) throw groupListError;
+
+    const existingGroupIds = new Set(result.map((order) => order.group_buy_id));
+
+    for (const group of closedAndHistoryGroups ?? []) {
+      if (existingGroupIds.has(group.id)) continue;
+      result.push({
+        id: `group-${group.id}`,
+        group_buy_id: group.id,
+        created_at: group.created_at,
+        group,
+        items: [],
+        isFinalized: group.status === "finalized",
+      });
+    }
+
+    // 保持最新團購優先。
+    result.sort((a, b) => {
+      const aTime = new Date(a.group?.end_at ?? a.created_at).getTime();
+      const bTime = new Date(b.group?.end_at ?? b.created_at).getTime();
+      return bTime - aTime;
+    });
 
     return NextResponse.json({ data: result });
   } catch (error) {
