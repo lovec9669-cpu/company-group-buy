@@ -1,41 +1,54 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type Member = { id?: string; employeeId: string; name: string };
 type GroupBuy = { id: string; name: string; description: string | null; start_at: string; end_at: string; status: "open" | "closed" | "reviewing" | "finalized" };
-type GroupDetail = GroupBuy & { totalAmount: number | null; products: { productId: string; productName: string; quantity: number; amount: number }[] };
+type Product = { id: string; name: string; description: string | null; unit: string | null; price: number; quantity: number; max_quantity: number | null; orderedQuantity: number; price_group_id: string | null };
+type PriceGroup = { id: string; name: string; sort_order: number };
+type PriceTier = { id: string; price_group_id: string; min_quantity: number; max_quantity: number | null; unit_price: number };
+type GroupDetail = GroupBuy & { products: Product[]; priceGroups: PriceGroup[]; priceTiers: PriceTier[]; totalAmount: number | null };
+type MyOrder = { id: string; group_buy_id: string; created_at: string; group?: GroupBuy; items: { productId: string; productName: string; unit: string; quantity: number; finalAmount: number | null }[]; isFinalized: boolean };
 
-function formatDate(value: string) {
-  return new Date(value).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
-}
+type Step = "products" | "confirm";
+
+function formatDate(value: string) { return new Date(value).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }); }
 function formatMoney(value: number) { return new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 0 }).format(value); }
 function normalizeEmployeeId(value: string) { return value.replace(/\D/g, "").slice(0, 5).padStart(5, "0"); }
 
-const steps = ["團購中", "截止", "後台計算中", "計算完成", "顯示訂單金額"];
-function statusStep(status: GroupBuy["status"]) { return status === "open" ? 1 : status === "closed" ? 2 : status === "reviewing" ? 3 : 5; }
-function statusText(status: GroupBuy["status"]) { return status === "open" ? "團購中" : status === "closed" ? "截止" : status === "reviewing" ? "後台計算中" : "計算完成"; }
+function getTierPrice(group: GroupDetail, product: Product, quantity: number) {
+  if (quantity <= 0) return 0;
+  const groupId = product.price_group_id;
+  const tiers = group.priceTiers.filter((tier) => tier.price_group_id === groupId).sort((a, b) => a.min_quantity - b.min_quantity);
+  const tier = tiers.find((item) => quantity >= item.min_quantity && (item.max_quantity == null || quantity <= item.max_quantity));
+  return tier?.unit_price ?? product.price;
+}
 
-function StatusFlow({ status }: { status: GroupBuy["status"] }) {
-  const current = statusStep(status);
-  return <div className="mt-5 overflow-x-auto"><div className="flex min-w-[680px] items-start">{steps.map((step, index) => { const number = index + 1; const done = number <= current; const active = number === current; return <div key={step} className="flex flex-1 items-start"><div className="flex min-w-0 flex-1 flex-col items-center"><div className={`flex h-9 w-9 items-center justify-center rounded-full border-2 text-sm font-bold ${done ? "border-[var(--accent)] bg-[var(--accent)] text-white" : "border-[var(--border)] bg-white text-[var(--muted)]"}`}>{number}</div><div className={`mt-2 text-center text-xs font-semibold ${active ? "text-[var(--accent)]" : "text-[var(--muted)]"}`}>{step}</div></div>{index < steps.length - 1 && <div className={`mt-4 h-0.5 flex-1 ${number < current ? "bg-[var(--accent)]" : "bg-[var(--border)]"}`} />}</div>; })}</div></div>;
+function StatusBadge({ status }: { status: GroupBuy["status"] }) {
+  const text = status === "open" ? "進行中" : status === "closed" ? "截止" : status === "reviewing" ? "後台計算中" : "計算完成";
+  return <span className="rounded-full bg-[#f1f3ef] px-3 py-1 text-xs font-semibold text-[var(--muted)]">{text}</span>;
 }
 
 export default function Home() {
   const [member, setMember] = useState<Member | null>(null);
   const [showMemberForm, setShowMemberForm] = useState(false);
+  const [employeeId, setEmployeeId] = useState("");
+  const [name, setName] = useState("");
   const [memberError, setMemberError] = useState("");
   const [savingMember, setSavingMember] = useState(false);
+  const [groups, setGroups] = useState<GroupBuy[]>([]);
+  const [myOrders, setMyOrders] = useState<MyOrder[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [activeMenu, setActiveMenu] = useState<"current" | "history">("current");
+  const [selectedGroup, setSelectedGroup] = useState<GroupDetail | null>(null);
+  const [quantities, setQuantities] = useState<Record<string, number>>({});
+  const [orderStep, setOrderStep] = useState<Step>("products");
+  const [savingOrder, setSavingOrder] = useState(false);
+  const [orderError, setOrderError] = useState("");
   const [showAdminLogin, setShowAdminLogin] = useState(false);
   const [adminPassword, setAdminPassword] = useState("");
   const [adminError, setAdminError] = useState("");
   const [adminLoggingIn, setAdminLoggingIn] = useState(false);
-  const [employeeId, setEmployeeId] = useState("");
-  const [name, setName] = useState("");
-  const [groups, setGroups] = useState<GroupBuy[]>([]);
-  const [selectedGroup, setSelectedGroup] = useState<GroupDetail | null>(null);
-  const [loadingDetail, setLoadingDetail] = useState(false);
-  const [loading, setLoading] = useState(true);
 
   async function loadGroups() {
     try {
@@ -45,25 +58,26 @@ export default function Home() {
     } finally { setLoading(false); }
   }
 
-  async function openGroup(group: GroupBuy) {
-    setLoadingDetail(true);
-    try {
-      const response = await fetch(`/api/group-buys/${group.id}/public`, { cache: "no-store" });
-      const result = await response.json();
-      if (response.ok) setSelectedGroup(result.data);
-    } finally { setLoadingDetail(false); }
+  async function loadOrders(currentMember = member) {
+    if (!currentMember?.employeeId) { setMyOrders([]); return; }
+    const response = await fetch(`/api/my-orders?employeeId=${encodeURIComponent(currentMember.employeeId)}`, { cache: "no-store" });
+    const result = await response.json();
+    if (response.ok) setMyOrders(result.data ?? []);
   }
 
   useEffect(() => {
     const saved = localStorage.getItem("company-group-buy-member");
-    if (saved) { try { setMember(JSON.parse(saved)); } catch { localStorage.removeItem("company-group-buy-member"); } }
+    if (saved) {
+      try { const parsed = JSON.parse(saved) as Member; setMember(parsed); setEmployeeId(parsed.employeeId); setName(parsed.name); loadOrders(parsed); }
+      catch { localStorage.removeItem("company-group-buy-member"); }
+    }
     loadGroups();
   }, []);
 
   async function saveMember() {
     setMemberError("");
     const normalized = normalizeEmployeeId(employeeId);
-    if (normalized.length !== 5) { setMemberError("工號必須是 1～5 位數字，系統會自動補成 5 位數。"); return; }
+    if (normalized.length !== 5) { setMemberError("請輸入工號，系統會自動補成 5 位數，例如 09279。"); return; }
     if (!name.trim()) { setMemberError("請輸入姓名。"); return; }
     setSavingMember(true);
     try {
@@ -72,35 +86,73 @@ export default function Home() {
       if (!response.ok) { setMemberError(result.error ?? "成員資料儲存失敗"); return; }
       const next: Member = result.data;
       localStorage.setItem("company-group-buy-member", JSON.stringify(next));
-      setMember(next); setEmployeeId(next.employeeId); setName(next.name); setShowMemberForm(false);
+      setMember(next); setEmployeeId(next.employeeId); setName(next.name); setShowMemberForm(false); await loadOrders(next);
     } catch { setMemberError("無法連線到伺服器，請稍後再試"); }
     finally { setSavingMember(false); }
   }
 
-  function switchMember() { setMemberError(""); setEmployeeId(member?.employeeId ?? ""); setName(member?.name ?? ""); setShowMemberForm(true); }
-  async function adminLogin(event: React.FormEvent) { event.preventDefault(); setAdminError(""); setAdminLoggingIn(true); try { const response = await fetch("/api/admin/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: adminPassword }) }); const result = await response.json(); if (!response.ok) { setAdminError(result.error ?? "管理員密碼錯誤"); return; } window.location.href = "/admin"; } catch { setAdminError("無法連線到伺服器，請稍後再試"); } finally { setAdminLoggingIn(false); } }
+  function openOrder(group: GroupBuy) {
+    setOrderError(""); setOrderStep("products"); setQuantities({});
+    fetch(`/api/group-buys/${group.id}/public`, { cache: "no-store" }).then(async (response) => { const result = await response.json(); if (!response.ok) throw new Error(result.error ?? "無法取得團購"); setSelectedGroup(result.data); }).catch((error) => setOrderError(error instanceof Error ? error.message : "無法取得團購資料"));
+  }
+  function closeOrder() { setSelectedGroup(null); setOrderStep("products"); setQuantities({}); setOrderError(""); }
+  function setQuantity(productId: string, value: number, max: number | null) { const safe = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0; setQuantities((current) => ({ ...current, [productId]: max != null ? Math.min(safe, max) : safe })); }
+
+  const selectedItems = useMemo(() => selectedGroup?.products.filter((product) => (quantities[product.id] ?? 0) > 0).map((product) => ({ product, quantity: quantities[product.id] ?? 0 })) ?? [], [selectedGroup, quantities]);
+  const previewTotalQuantity = selectedItems.reduce((sum, item) => sum + item.quantity, 0);
+  const previewAmount = selectedGroup ? selectedItems.reduce((sum, item) => sum + item.quantity * getTierPrice(selectedGroup, item.product, previewTotalQuantity), 0) : 0;
+
+  async function confirmOrder() {
+    if (!member?.id || !selectedGroup) return;
+    if (!selectedItems.length) { setOrderError("請至少選擇一項商品。"); setOrderStep("products"); return; }
+    setSavingOrder(true); setOrderError("");
+    try {
+      const response = await fetch("/api/orders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ memberId: member.id, groupBuyId: selectedGroup.id, items: selectedItems.map((item) => ({ productId: item.product.id, quantity: item.quantity })) }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "訂單送出失敗");
+      closeOrder(); setActiveMenu("current"); await loadOrders(); await loadGroups();
+    } catch (error) { setOrderError(error instanceof Error ? error.message : "訂單送出失敗"); }
+    finally { setSavingOrder(false); }
+  }
+
+  async function adminLogin(event: React.FormEvent) {
+    event.preventDefault(); setAdminError(""); setAdminLoggingIn(true);
+    try { const response = await fetch("/api/admin/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: adminPassword }) }); const result = await response.json(); if (!response.ok) { setAdminError(result.error ?? "管理員密碼錯誤"); return; } window.location.href = "/admin"; }
+    catch { setAdminError("無法連線到伺服器，請稍後再試"); }
+    finally { setAdminLoggingIn(false); }
+  }
 
   const openGroups = groups.filter((group) => group.status === "open");
-  const closedGroups = groups.filter((group) => group.status === "closed" || group.status === "reviewing");
-  const pastGroups = groups.filter((group) => group.status === "finalized");
+  const currentOrders = myOrders.filter((order) => order.group?.status !== "finalized");
+  const historyOrders = myOrders.filter((order) => order.group?.status === "finalized");
 
-  const GroupCard = ({ group, tone }: { group: GroupBuy; tone: "open" | "closed" | "past" }) => <article className="rounded-3xl border border-[var(--border)] bg-white p-5 shadow-sm"><div className="flex items-start justify-between gap-3"><div><button type="button" onClick={() => openGroup(group)} className="text-left text-lg font-bold hover:text-[var(--accent)] hover:underline">{group.name}</button><p className="mt-1 text-sm text-[var(--muted)]">截止：{formatDate(group.end_at)}</p></div><span className="shrink-0 rounded-full bg-[#f1f3ef] px-3 py-1 text-xs font-semibold text-[var(--muted)]">{tone === "open" ? "進行中" : tone === "closed" ? statusText(group.status) : "已完成"}</span></div>{group.description && <p className="mt-3 text-sm text-[var(--muted)]">{group.description}</p>}<button type="button" onClick={() => openGroup(group)} className="mt-4 w-full rounded-xl border border-[var(--border)] px-4 py-2.5 text-sm font-semibold">{tone === "open" ? "進入團購" : "查看團購狀況"}</button></article>;
+  if (!member) return <main className="min-h-screen px-5 py-10"><div className="mx-auto max-w-md rounded-3xl bg-white p-7 shadow-sm"><p className="text-sm font-medium text-[var(--accent)]">Company Group Buy</p><h1 className="mt-2 text-2xl font-bold">公司團購</h1><p className="mt-2 text-sm text-[var(--muted)]">第一次使用請輸入工號與姓名，之後此電腦會記住你的資料。</p><button onClick={() => { setMemberError(""); setEmployeeId(""); setName(""); setShowMemberForm(true); }} className="mt-6 w-full rounded-xl bg-[var(--accent)] px-4 py-3 font-semibold text-white">登入團購系統</button><div className="mt-6 text-center"><button onClick={() => setShowAdminLogin(true)} className="text-xs text-[var(--muted)] hover:underline">管理員入口</button></div></div>{showMemberForm && <MemberModal employeeId={employeeId} name={name} setEmployeeId={setEmployeeId} setName={setName} error={memberError} saving={savingMember} onCancel={() => setShowMemberForm(false)} onSave={saveMember} />}{showAdminLogin && <AdminModal password={adminPassword} setPassword={setAdminPassword} error={adminError} logging={adminLoggingIn} onCancel={() => setShowAdminLogin(false)} onSubmit={adminLogin} />}</main>;
 
-  return <main className="min-h-screen px-5 py-8 md:px-10"><div className="mx-auto max-w-6xl">
-    <header className="mb-8 flex flex-col gap-4 rounded-3xl bg-white p-6 shadow-sm md:flex-row md:items-center md:justify-between"><div><p className="mb-1 text-sm font-medium text-[var(--accent)]">Company Group Buy</p><h1 className="text-3xl font-bold tracking-tight">公司團購</h1><p className="mt-2 text-sm text-[var(--muted)]">集中管理團購、訂單與最終結算。</p></div>{member ? <div className="flex items-center gap-3 rounded-2xl bg-[#f4f5f1] px-4 py-3"><div><div className="font-semibold">{member.name}</div><div className="text-xs text-[var(--muted)]">員工編號：{member.employeeId}</div></div><button onClick={switchMember} className="rounded-xl border border-[var(--border)] bg-white px-3 py-2 text-sm">切換使用者</button></div> : <button onClick={() => { setMemberError(""); setEmployeeId(""); setName(""); setShowMemberForm(true); }} className="rounded-xl bg-[var(--accent)] px-5 py-3 font-semibold text-white">首次使用／設定身分</button>}</header>
+  return <main className="min-h-screen bg-[#f7f8f5] md:flex">
+    <aside className="w-full shrink-0 border-b border-[var(--border)] bg-white md:fixed md:inset-y-0 md:w-64 md:border-b-0 md:border-r"><div className="flex h-full flex-col p-5"><div className="mb-8"><p className="text-sm font-medium text-[var(--accent)]">Company Group Buy</p><h1 className="mt-1 text-xl font-bold">團購系統</h1></div><div className="rounded-2xl bg-[#f4f5f1] p-4"><p className="font-semibold">{member.name}</p><p className="mt-1 text-xs text-[var(--muted)]">工號：{member.employeeId}</p></div><nav className="mt-6 space-y-2"><button onClick={() => setActiveMenu("current")} className={`w-full rounded-xl px-4 py-3 text-left text-sm font-semibold ${activeMenu === "current" ? "bg-[var(--accent)] text-white" : "hover:bg-[#f4f5f1]"}`}>進行中的訂單</button><button onClick={() => setActiveMenu("history")} className={`w-full rounded-xl px-4 py-3 text-left text-sm font-semibold ${activeMenu === "history" ? "bg-[var(--accent)] text-white" : "hover:bg-[#f4f5f1]"}`}>歷史訂單</button></nav><div className="mt-auto space-y-2 pt-6"><button onClick={() => { setEmployeeId(member.employeeId); setName(member.name); setMemberError(""); setShowMemberForm(true); }} className="w-full rounded-xl border border-[var(--border)] px-4 py-2.5 text-sm">修改身分資料</button><button onClick={() => setShowAdminLogin(true)} className="w-full rounded-xl px-4 py-2.5 text-left text-xs text-[var(--muted)] hover:bg-[#f4f5f1]">管理員入口</button></div></div></aside>
 
-    <section className="mb-8"><div className="mb-4"><h2 className="text-xl font-bold">團購總覽</h2><p className="mt-1 text-sm text-[var(--muted)]">團購截止後會進入後台確認與計算流程，只有發布完成後才公開總訂單金額。</p></div>{loading ? <div className="rounded-3xl border border-[var(--border)] bg-white p-8 text-center text-sm text-[var(--muted)]">正在讀取團購...</div> : <div className="grid gap-5 lg:grid-cols-3">
-      <div className="space-y-3"><h3 className="font-bold">進行中的團購 <span className="text-sm font-normal text-[var(--muted)]">({openGroups.length})</span></h3>{openGroups.length ? openGroups.map((group) => <GroupCard key={group.id} group={group} tone="open" />) : <div className="rounded-3xl border border-dashed border-[var(--border)] bg-white p-6 text-center text-sm text-[var(--muted)]">目前沒有進行中的團購。</div>}</div>
-      <div className="space-y-3"><h3 className="font-bold">截止的團購 <span className="text-sm font-normal text-[var(--muted)]">({closedGroups.length})</span></h3>{closedGroups.length ? closedGroups.map((group) => <GroupCard key={group.id} group={group} tone="closed" />) : <div className="rounded-3xl border border-dashed border-[var(--border)] bg-white p-6 text-center text-sm text-[var(--muted)]">目前沒有待處理團購。</div>}</div>
-      <div className="space-y-3"><h3 className="font-bold">歷次團購 <span className="text-sm font-normal text-[var(--muted)]">({pastGroups.length})</span></h3>{pastGroups.length ? pastGroups.map((group) => <GroupCard key={group.id} group={group} tone="past" />) : <div className="rounded-3xl border border-dashed border-[var(--border)] bg-white p-6 text-center text-sm text-[var(--muted)]">目前還沒有完成的歷次團購。</div>}</div>
-    </div>}</section>
+    <section className="w-full p-5 md:ml-64 md:p-10"><div className="mx-auto max-w-5xl"><header className="mb-8 flex items-center justify-between"><div><p className="text-sm text-[var(--muted)]">{activeMenu === "current" ? "Member Dashboard" : "Order History"}</p><h2 className="mt-1 text-3xl font-bold">{activeMenu === "current" ? "進行中的訂單" : "歷史訂單"}</h2></div><button onClick={() => { loadGroups(); loadOrders(); }} className="rounded-xl border border-[var(--border)] bg-white px-4 py-2 text-sm">重新整理</button></header>
 
-    {selectedGroup && <section className="mb-8 rounded-3xl bg-white p-6 shadow-sm"><div className="flex items-start justify-between gap-4"><div><p className="text-sm font-medium text-[var(--accent)]">團購狀況</p><h2 className="mt-1 text-2xl font-bold">{selectedGroup.name}</h2><p className="mt-1 text-sm text-[var(--muted)]">{formatDate(selectedGroup.start_at)} ～ {formatDate(selectedGroup.end_at)}</p></div><button type="button" onClick={() => setSelectedGroup(null)} className="rounded-xl border border-[var(--border)] px-4 py-2 text-sm">關閉</button></div><StatusFlow status={selectedGroup.status} /><div className="mt-6 rounded-2xl bg-[#f4f5f1] p-5"><p className="text-sm font-semibold">目前狀態：{statusText(selectedGroup.status)}</p>{selectedGroup.status === "closed" && <p className="mt-1 text-sm text-[var(--muted)]">團購已截止，等待管理員確認訂單。</p>}{selectedGroup.status === "reviewing" && <p className="mt-1 text-sm text-[var(--muted)]">管理員已確認訂單，目前正在後台計算最終金額。</p>}{selectedGroup.status === "finalized" && <p className="mt-1 text-sm text-[var(--muted)]">計算完成，最終總訂單金額已公開。</p>}{selectedGroup.status === "finalized" && <div className="mt-4"><p className="text-xs text-[var(--muted)]">總訂單金額</p><p className="mt-1 text-3xl font-bold text-[var(--accent)]">$ {formatMoney(selectedGroup.totalAmount ?? 0)}</p></div>}</div>{loadingDetail && <p className="mt-4 text-sm text-[var(--muted)]">正在更新團購狀況…</p>}</section>}
+      {activeMenu === "current" ? <>
+        <section className="mb-10"><div className="mb-4"><h3 className="text-xl font-bold">我的訂單</h3><p className="mt-1 text-sm text-[var(--muted)]">已送出的訂單會顯示在這裡，團購截止前可以重新進入團購修改數量。</p></div>{currentOrders.length ? <div className="space-y-3">{currentOrders.map((order) => <article key={order.id} className="rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-center justify-between gap-3"><div><h4 className="font-bold">{order.group?.name ?? "團購"}</h4><p className="mt-1 text-sm text-[var(--muted)]">下單時間：{formatDate(order.created_at)}</p></div>{order.group && <StatusBadge status={order.group.status} />}</div><div className="mt-4 grid gap-2 sm:grid-cols-2">{order.items.map((item) => <div key={item.productId} className="rounded-xl bg-[#f7f8f5] px-4 py-3 text-sm"><span>{item.productName}</span><span className="float-right font-semibold">{item.quantity} {item.unit}</span></div>)}</div></article>)}</div> : <div className="rounded-3xl border border-dashed border-[var(--border)] bg-white p-8 text-center text-sm text-[var(--muted)]">目前還沒有進行中的訂單。</div>}</section>
+        <section><div className="mb-4"><h3 className="text-xl font-bold">可參加的團購</h3><p className="mt-1 text-sm text-[var(--muted)]">點擊「進入團購」開始選購。</p></div>{loading ? <div className="rounded-3xl bg-white p-8 text-center text-sm text-[var(--muted)]">正在讀取...</div> : openGroups.length ? <div className="grid gap-4 md:grid-cols-2">{openGroups.map((group) => <article key={group.id} className="rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-start justify-between gap-3"><div><h4 className="text-lg font-bold">{group.name}</h4><p className="mt-1 text-sm text-[var(--muted)]">截止：{formatDate(group.end_at)}</p></div><StatusBadge status={group.status} /></div>{group.description && <p className="mt-3 text-sm text-[var(--muted)]">{group.description}</p>}<button onClick={() => openOrder(group)} className="mt-5 w-full rounded-xl bg-[var(--accent)] px-4 py-3 font-semibold text-white transition hover:opacity-90">進入團購</button></article>)}</div> : <div className="rounded-3xl border border-dashed border-[var(--border)] bg-white p-8 text-center text-sm text-[var(--muted)]">目前沒有進行中的團購。</div>}</section>
+      </> : <section>{historyOrders.length ? <div className="space-y-4">{historyOrders.map((order) => { const total = order.items.reduce((sum, item) => sum + (item.finalAmount ?? 0), 0); return <article key={order.id} className="rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-start justify-between gap-4"><div><h3 className="text-lg font-bold">{order.group?.name ?? "團購"}</h3><p className="mt-1 text-sm text-[var(--muted)]">{order.group ? `${formatDate(order.group.start_at)} ～ ${formatDate(order.group.end_at)}` : ""}</p></div><div className="text-right"><p className="text-xs text-[var(--muted)]">最終金額</p><p className="text-xl font-bold text-[var(--accent)]">$ {formatMoney(total)}</p></div></div><div className="mt-4 divide-y divide-[var(--border)] rounded-xl border border-[var(--border)]">{order.items.map((item) => <div key={item.productId} className="flex justify-between px-4 py-3 text-sm"><span>{item.productName} × {item.quantity}</span><span>{item.finalAmount == null ? "待確認" : `$ ${formatMoney(item.finalAmount)}`}</span></div>)}</div></article>; })}</div> : <div className="rounded-3xl border border-dashed border-[var(--border)] bg-white p-8 text-center text-sm text-[var(--muted)]">目前沒有歷史訂單。</div>}</section>}
+    </div></section>
 
-    <footer className="mt-8 text-center"><button onClick={() => { setAdminError(""); setAdminPassword(""); setShowAdminLogin(true); }} className="text-xs text-[var(--muted)] hover:underline">管理員入口</button></footer>
-  </div>
-
-  {showMemberForm && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-5"><div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-xl"><h2 className="text-xl font-bold">設定團員身分</h2><p className="mt-2 text-sm text-[var(--muted)]">工號一律以 5 位數儲存，例如 9279 會自動變成 09279。</p><label className="mt-5 block text-sm font-medium">員工編號</label><input inputMode="numeric" maxLength={5} value={employeeId} onChange={(e) => setEmployeeId(e.target.value.replace(/\D/g, "").slice(0, 5))} onBlur={() => setEmployeeId(normalizeEmployeeId(employeeId))} className="mt-2 w-full rounded-xl border border-[var(--border)] px-4 py-3" placeholder="例如：09279" /><label className="mt-4 block text-sm font-medium">姓名</label><input value={name} onChange={(e) => setName(e.target.value)} className="mt-2 w-full rounded-xl border border-[var(--border)] px-4 py-3" placeholder="例如：王小明" />{memberError && <p className="mt-3 text-sm font-medium text-red-600">{memberError}</p>}<div className="mt-6 flex gap-3"><button onClick={() => setShowMemberForm(false)} className="flex-1 rounded-xl border border-[var(--border)] px-4 py-3">取消</button><button onClick={saveMember} disabled={savingMember} className="flex-1 rounded-xl bg-[var(--accent)] px-4 py-3 font-semibold text-white disabled:opacity-50">{savingMember ? "確認中..." : "儲存"}</button></div></div></div>}
-  {showAdminLogin && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-5"><div className="w-full max-w-md rounded-3xl bg-white p-7 shadow-2xl"><div className="text-center"><p className="text-sm font-medium text-[var(--accent)]">Company Group Buy</p><h2 className="mt-2 text-2xl font-bold">管理員入口</h2><p className="mt-2 text-sm text-[var(--muted)]">請輸入管理員密碼後進入後台。</p></div><form onSubmit={adminLogin} className="mt-6"><label className="text-sm font-medium">管理員密碼</label><input autoFocus type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} className="mt-2 w-full rounded-xl border border-[var(--border)] px-4 py-3 outline-none focus:border-[var(--accent)]" placeholder="請輸入密碼" required />{adminError && <p className="mt-3 text-sm font-medium text-red-600">{adminError}</p>}<div className="mt-6 flex gap-3"><button type="button" onClick={() => setShowAdminLogin(false)} className="flex-1 rounded-xl border border-[var(--border)] px-4 py-3">取消</button><button type="submit" disabled={adminLoggingIn} className="flex-1 rounded-xl bg-[var(--accent)] px-4 py-3 font-semibold text-white disabled:opacity-50">{adminLoggingIn ? "驗證中..." : "登入後台"}</button></div></form></div></div>}
+    {showMemberForm && <MemberModal employeeId={employeeId} name={name} setEmployeeId={setEmployeeId} setName={setName} error={memberError} saving={savingMember} onCancel={() => setShowMemberForm(false)} onSave={saveMember} />}
+    {showAdminLogin && <AdminModal password={adminPassword} setPassword={setAdminPassword} error={adminError} logging={adminLoggingIn} onCancel={() => setShowAdminLogin(false)} onSubmit={adminLogin} />}
+    {selectedGroup && <OrderModal group={selectedGroup} quantities={quantities} step={orderStep} selectedItems={selectedItems} totalQuantity={previewTotalQuantity} previewAmount={previewAmount} error={orderError} saving={savingOrder} setQuantity={setQuantity} onClose={closeOrder} onNext={() => { if (!selectedItems.length) { setOrderError("請至少選擇一項商品。"); return; } setOrderError(""); setOrderStep("confirm"); }} onBack={() => { setOrderError(""); setOrderStep("products"); }} onConfirm={confirmOrder} />}
   </main>;
+}
+
+function MemberModal({ employeeId, name, setEmployeeId, setName, error, saving, onCancel, onSave }: { employeeId: string; name: string; setEmployeeId: (value: string) => void; setName: (value: string) => void; error: string; saving: boolean; onCancel: () => void; onSave: () => void }) {
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-5"><div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-xl"><h2 className="text-xl font-bold">團員登入</h2><p className="mt-2 text-sm text-[var(--muted)]">工號會自動統一成 5 位數，例如 9279 → 09279。</p><label className="mt-5 block text-sm font-medium">員工編號</label><input inputMode="numeric" maxLength={5} value={employeeId} onChange={(e) => setEmployeeId(e.target.value.replace(/\D/g, "").slice(0, 5))} onBlur={() => setEmployeeId(normalizeEmployeeId(employeeId))} className="mt-2 w-full rounded-xl border border-[var(--border)] px-4 py-3" placeholder="09279" /><label className="mt-4 block text-sm font-medium">姓名</label><input value={name} onChange={(e) => setName(e.target.value)} className="mt-2 w-full rounded-xl border border-[var(--border)] px-4 py-3" placeholder="姓名" />{error && <p className="mt-3 text-sm text-red-600">{error}</p>}<div className="mt-6 flex gap-3"><button onClick={onCancel} className="flex-1 rounded-xl border border-[var(--border)] px-4 py-3">取消</button><button onClick={onSave} disabled={saving} className="flex-1 rounded-xl bg-[var(--accent)] px-4 py-3 font-semibold text-white disabled:opacity-50">{saving ? "確認中..." : "登入"}</button></div></div></div>;
+}
+
+function AdminModal({ password, setPassword, error, logging, onCancel, onSubmit }: { password: string; setPassword: (value: string) => void; error: string; logging: boolean; onCancel: () => void; onSubmit: (event: React.FormEvent) => void }) {
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-5"><div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-xl"><h2 className="text-xl font-bold">管理員入口</h2><p className="mt-2 text-sm text-[var(--muted)]">請輸入管理員密碼。</p><form onSubmit={onSubmit}><input autoFocus type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="mt-5 w-full rounded-xl border border-[var(--border)] px-4 py-3" />{error && <p className="mt-3 text-sm text-red-600">{error}</p>}<div className="mt-6 flex gap-3"><button type="button" onClick={onCancel} className="flex-1 rounded-xl border border-[var(--border)] px-4 py-3">取消</button><button disabled={logging} className="flex-1 rounded-xl bg-[var(--accent)] px-4 py-3 font-semibold text-white disabled:opacity-50">{logging ? "登入中..." : "登入"}</button></div></form></div></div>;
+}
+
+function OrderModal({ group, quantities, step, selectedItems, totalQuantity, previewAmount, error, saving, setQuantity, onClose, onNext, onBack, onConfirm }: { group: GroupDetail; quantities: Record<string, number>; step: Step; selectedItems: { product: Product; quantity: number }[]; totalQuantity: number; previewAmount: number; error: string; saving: boolean; setQuantity: (productId: string, value: number, max: number | null) => void; onClose: () => void; onNext: () => void; onBack: () => void; onConfirm: () => void }) {
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6"><div className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-3xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b border-[var(--border)] p-6"><div><p className="text-sm font-medium text-[var(--accent)]">{step === "products" ? "選擇商品" : "確認訂單"}</p><h2 className="mt-1 text-2xl font-bold">{group.name}</h2></div><button onClick={onClose} className="rounded-xl border border-[var(--border)] px-3 py-2 text-sm">關閉</button></div><div className="overflow-y-auto p-6">{step === "products" ? <><p className="mb-4 text-sm text-[var(--muted)]">請輸入要購買的數量。跨商品價格會依本團購所有員工的總訂購量計算。</p><div className="space-y-3">{group.products.map((product) => <div key={product.id} className="rounded-2xl border border-[var(--border)] p-4"><div className="flex items-start justify-between gap-4"><div><h3 className="font-semibold">{product.name}</h3>{product.description && <p className="mt-1 text-xs text-[var(--muted)]">{product.description}</p>}<p className="mt-1 text-xs text-[var(--muted)]">基本價格：$ {formatMoney(product.price)} {product.unit ? `/ ${product.unit}` : ""}</p>{product.max_quantity != null && <p className="mt-1 text-xs text-[var(--muted)]">個人最高購買：{product.max_quantity}</p>}</div><input type="number" min="0" max={product.max_quantity ?? undefined} value={quantities[product.id] ?? 0} onChange={(e) => setQuantity(product.id, Number(e.target.value), product.max_quantity)} className="w-24 rounded-xl border border-[var(--border)] px-3 py-2 text-center" /></div></div>)}</div></> : <><p className="text-sm text-[var(--muted)]">請確認以下訂購內容。按下確認後會正式送出訂單。</p><div className="mt-5 divide-y divide-[var(--border)] rounded-2xl border border-[var(--border)]">{selectedItems.map(({ product, quantity }) => <div key={product.id} className="flex justify-between px-4 py-4"><span>{product.name} × {quantity} {product.unit ?? ""}</span><span className="font-semibold">$ {formatMoney(quantity * getTierPrice(group, product, totalQuantity))}</span></div>)}</div><div className="mt-5 rounded-2xl bg-[#f4f5f1] p-5"><div className="flex justify-between text-sm"><span>總數量</span><span>{totalQuantity}</span></div><div className="mt-2 flex justify-between"><span className="font-semibold">目前預估金額</span><span className="text-xl font-bold text-[var(--accent)]">$ {formatMoney(previewAmount)}</span></div><p className="mt-3 text-xs text-[var(--muted)]">最終單價會依團購截止後全體員工的實際合計數量重新計算。</p></div></>}{error && <p className="mt-4 text-sm font-medium text-red-600">{error}</p>}</div><div className="flex items-center justify-between border-t border-[var(--border)] p-5"><button onClick={step === "products" ? onClose : onBack} className="rounded-xl border border-[var(--border)] px-5 py-3 font-medium">{step === "products" ? "取消" : "上一步"}</button>{step === "products" ? <button onClick={onNext} className="rounded-xl bg-[var(--accent)] px-6 py-3 font-semibold text-white">下一步</button> : <button onClick={onConfirm} disabled={saving} className="rounded-xl bg-[var(--accent)] px-6 py-3 font-semibold text-white disabled:opacity-50">{saving ? "送出中..." : "確認"}</button>}</div></div></div>;
 }
