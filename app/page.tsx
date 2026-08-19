@@ -98,6 +98,15 @@ export default function Home() {
     loadGroups();
   }, []);
 
+  useEffect(() => {
+    if (!member?.employeeId) return;
+    const timer = window.setInterval(() => {
+      loadGroups();
+      loadOrders(member);
+    }, 30000);
+    return () => window.clearInterval(timer);
+  }, [member?.employeeId]);
+
   async function saveMember() {
     setMemberError("");
     const normalized = normalizeEmployeeId(employeeId);
@@ -185,7 +194,7 @@ export default function Home() {
   }
 
   async function openEditOrder(order: MyOrder) {
-    if (!order.group || order.group.status !== "open") return;
+    if (!order.group || order.group.status !== "open" || new Date(order.group.end_at).getTime() <= Date.now()) return;
     setEditError("");
     setEditStep("products");
     setEditingOrder(order);
@@ -260,9 +269,10 @@ export default function Home() {
     }
   }
 
-  const openGroups = groups.filter((group) => group.status === "open");
-  const currentOrders = myOrders.filter((order) => order.group?.status === "open");
-  const closedOrders = myOrders.filter((order) => order.group?.status === "closed" || order.group?.status === "reviewing");
+  const now = Date.now();
+  const openGroups = groups.filter((group) => group.status === "open" && new Date(group.end_at).getTime() > now);
+  const currentOrders = myOrders.filter((order) => order.group?.status === "open" && new Date(order.group.end_at).getTime() > now);
+  const closedOrders = myOrders.filter((order) => (order.group?.status === "open" && new Date(order.group.end_at).getTime() <= now) || order.group?.status === "closed" || order.group?.status === "reviewing");
   const historyOrders = myOrders.filter((order) => order.group?.status === "finalized" || order.isFinalized);
   const myHistoryOrders = myOrders.filter((order) => !order.id.startsWith("group-") && (order.group?.status === "finalized" || order.isFinalized));
 
@@ -305,7 +315,7 @@ function OrderCard({ order, onEdit }: { order: MyOrder; onEdit?: () => void }) {
   const [expanded, setExpanded] = useState(false);
   const [groupDetail, setGroupDetail] = useState<GroupDetail | null>(null);
   const [loadingAmount, setLoadingAmount] = useState(false);
-  const canEdit = order.group?.status === "open" && !!onEdit;
+  const canEdit = order.group?.status === "open" && new Date(order.group.end_at).getTime() > Date.now() && !!onEdit;
 
   async function toggleExpanded() {
     const nextExpanded = !expanded;
@@ -343,6 +353,15 @@ function OrderCard({ order, onEdit }: { order: MyOrder; onEdit?: () => void }) {
   const displayedTotal = order.items.reduce((sum, item) => sum + (item.finalAmount ?? 0), 0);
   const isFinalized = order.group?.status === "finalized" || order.isFinalized;
 
+  function getItemUnitPrice(item: MyOrder["items"][number]) {
+    if (isFinalized && item.finalAmount != null && item.quantity > 0) return item.finalAmount / item.quantity;
+    if (!groupDetail) return null;
+    const product = groupDetail.products.find((p) => p.id === item.productId);
+    if (!product) return null;
+    const aggregateQuantity = groupDetail.products.filter((p) => p.price_group_id === product.price_group_id).reduce((sum, p) => sum + Number(p.orderedQuantity ?? 0), 0);
+    return getTierPrice(groupDetail, product, aggregateQuantity);
+  }
+
   return <article className="rounded-3xl bg-white shadow-sm overflow-hidden">
     <button onClick={toggleExpanded} className="flex w-full items-center justify-between gap-4 px-5 py-5 text-left hover:bg-[#fafbf9]">
       <span className="font-bold">{order.group?.name ?? "團購"}</span>
@@ -353,7 +372,7 @@ function OrderCard({ order, onEdit }: { order: MyOrder; onEdit?: () => void }) {
     </button>
     {expanded && <div className="border-t border-[var(--border)] px-5 pb-5 pt-4">
       <div className="divide-y rounded-2xl border border-[var(--border)]">
-        {order.items.length ? order.items.map((item) => <div key={item.productId} className="flex items-center justify-between px-4 py-3 text-sm"><span>{item.productName}</span><span className="font-semibold">{item.quantity} {item.unit}</span></div>) : <div className="px-4 py-4 text-sm text-[var(--muted)]">目前沒有你的訂購明細。</div>}
+        {order.items.length ? order.items.map((item) => { const unitPrice = getItemUnitPrice(item); return <div key={item.productId} className="flex items-center justify-between gap-4 px-4 py-3 text-sm"><span className="min-w-0">{item.productName}</span><span className="shrink-0 text-right"><span className="mr-5 text-[var(--muted)]">單價 {unitPrice == null ? "計算中" : `$ ${formatMoney(unitPrice)}`}</span><span className="font-semibold">{item.quantity} {item.unit}</span></span></div>; }) : <div className="px-4 py-4 text-sm text-[var(--muted)]">目前沒有你的訂購明細。</div>}
       </div>
       <div className="mt-4 flex items-center justify-between rounded-2xl bg-[#f4f5f1] px-4 py-4">
         <span className="font-semibold">總金額</span>
