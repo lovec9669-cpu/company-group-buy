@@ -14,7 +14,7 @@ export async function GET() {
     if (error) throw error;
     return NextResponse.json({ data });
   } catch (error) {
-    console.error(error);
+    console.error("GET /api/group-buys", error);
     return NextResponse.json({ error: "無法取得團購資料" }, { status: 500 });
   }
 }
@@ -29,29 +29,45 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json();
-    const { name, description, startAt, endAt } = body;
+    const name = String(body.name ?? "").trim();
+    const description = String(body.description ?? "").trim();
+    const startAt = String(body.startAt ?? "").trim();
+    const endAt = String(body.endAt ?? "").trim();
 
     if (!name || !startAt || !endAt) {
       return NextResponse.json({ error: "請填寫團購名稱、開始時間與結束時間" }, { status: 400 });
+    }
+
+    const start = new Date(startAt);
+    const end = new Date(endAt);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      return NextResponse.json({ error: "開始或結束時間格式不正確" }, { status: 400 });
+    }
+    if (end <= start) {
+      return NextResponse.json({ error: "結束時間必須晚於開始時間" }, { status: 400 });
     }
 
     const supabase = getSupabaseAdmin();
     const { data, error } = await supabase
       .from("group_buys")
       .insert({
-        name: String(name).trim(),
-        description: description ? String(description).trim() : null,
-        start_at: startAt,
-        end_at: endAt,
+        name,
+        description: description || null,
+        start_at: start.toISOString(),
+        end_at: end.toISOString(),
         status: "open",
       })
       .select("id,name,description,start_at,end_at,status,created_at")
       .single();
 
-    if (error) throw error;
+    if (error) {
+      console.error("Supabase group_buys insert error", error);
+      return NextResponse.json({ error: `建立團購失敗：${error.message}` }, { status: 500 });
+    }
+
     return NextResponse.json({ data }, { status: 201 });
   } catch (error) {
-    console.error(error);
-    return NextResponse.json({ error: "建立團購失敗" }, { status: 500 });
+    console.error("POST /api/group-buys", error);
+    return NextResponse.json({ error: "建立團購失敗，請稍後再試" }, { status: 500 });
   }
 }
