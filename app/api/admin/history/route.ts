@@ -19,7 +19,7 @@ export async function GET(request: Request) {
 
     const url = new URL(request.url);
     const requestedStatus = url.searchParams.get("status");
-    const statusFilter = requestedStatus === "closed" ? ["closed"] : ["reviewing", "finalized"];
+    const statusFilter = requestedStatus === "closed" ? ["closed", "reviewing"] : ["finalized"];
 
     const { data: groups, error: groupError } = await supabase
       .from("group_buys")
