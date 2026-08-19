@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import AdminSidebar from "./admin/AdminSidebar";
 
 export const metadata: Metadata = {
   title: "公司團購",
@@ -9,7 +10,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="zh-Hant">
-      <body>{children}</body>
+      <body><AdminSidebar />{children}</body>
     </html>
   );
 }
