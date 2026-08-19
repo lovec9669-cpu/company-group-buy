@@ -11,6 +11,12 @@ function requireAdmin() {
   return cookies().then((store) => isValidAdminToken(store.get(adminCookieName)?.value));
 }
 
+function parseTaipeiDateTime(value: string) {
+  const normalized = value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(normalized)) return new Date(NaN);
+  return new Date(`${normalized}:00+08:00`);
+}
+
 function validatePayload(body: Record<string, unknown>) {
   const name = String(body.name ?? "").trim();
   const description = String(body.description ?? "").trim();
@@ -20,8 +26,8 @@ function validatePayload(body: Record<string, unknown>) {
   const priceGroups = Array.isArray(body.priceGroups) ? (body.priceGroups as PriceGroupInput[]) : [];
 
   if (!name || !startAt || !endAt) throw new Error("請填寫團購名稱、開始時間與結束時間");
-  const start = new Date(startAt);
-  const end = new Date(endAt);
+  const start = parseTaipeiDateTime(startAt);
+  const end = parseTaipeiDateTime(endAt);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) throw new Error("開始或結束時間格式不正確");
   if (end <= start) throw new Error("結束時間必須晚於開始時間");
   if (!products.length) throw new Error("至少需要一個商品");
@@ -60,9 +66,7 @@ function validatePayload(body: Record<string, unknown>) {
     if (normalized[0].min !== 1) throw new Error(`價格群組 ${gi + 1} 的第一個價格階梯最低數量必須從 1 開始`);
     for (let ti = 0; ti < normalized.length; ti += 1) {
       const tier = normalized[ti];
-      if (!Number.isInteger(tier.min) || tier.min < 1 || (tier.max !== null && (!Number.isInteger(tier.max) || tier.max < tier.min)) || !Number.isFinite(tier.price) || tier.price < 0) {
-        throw new Error(`價格群組 ${gi + 1} 的價格階梯 ${ti + 1} 格式不正確`);
-      }
+      if (!Number.isInteger(tier.min) || tier.min < 1 || (tier.max !== null && (!Number.isInteger(tier.max) || tier.max < tier.min)) || !Number.isFinite(tier.price) || tier.price < 0) throw new Error(`價格群組 ${gi + 1} 的價格階梯 ${ti + 1} 格式不正確`);
       if (ti > 0) {
         const previous = normalized[ti - 1];
         if (previous.max === null) throw new Error(`價格群組 ${gi + 1} 只有最後一階可以設定為「以上」`);
@@ -81,22 +85,14 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     const supabase = getSupabaseAdmin();
     const { data: group, error: groupError } = await supabase.from("group_buys").select("id,name,description,start_at,end_at,status,created_at").eq("id", id).single();
     if (groupError) return NextResponse.json({ error: "找不到這個團購" }, { status: 404 });
-
     const { data: products, error: productError } = await supabase.from("products").select("id,name,description,unit,price,quantity,max_quantity,sort_order,price_group_id").eq("group_buy_id", id).order("sort_order", { ascending: true });
     if (productError) throw productError;
     const { data: priceGroups, error: priceGroupError } = await supabase.from("group_buy_price_groups").select("id,name,sort_order").eq("group_buy_id", id).order("sort_order", { ascending: true });
     if (priceGroupError) throw priceGroupError;
     const { data: tiers, error: tierError } = await supabase.from("group_buy_price_tiers").select("id,price_group_id,min_quantity,max_quantity,unit_price").eq("group_buy_id", id).order("min_quantity", { ascending: true });
     if (tierError) throw tierError;
-
     const productRows = products ?? [];
-    const groupRows = (priceGroups ?? []).map((pg) => ({
-      id: pg.id,
-      name: pg.name,
-      sort_order: pg.sort_order,
-      productIndexes: productRows.map((p, index) => p.price_group_id === pg.id ? index : -1).filter((index) => index >= 0),
-      tiers: (tiers ?? []).filter((tier) => tier.price_group_id === pg.id).map((tier) => ({ id: tier.id, minQuantity: String(tier.min_quantity), maxQuantity: tier.max_quantity === null ? "" : String(tier.max_quantity), unitPrice: String(tier.unit_price) })),
-    }));
+    const groupRows = (priceGroups ?? []).map((pg) => ({ id: pg.id, name: pg.name, sort_order: pg.sort_order, productIndexes: productRows.map((p, index) => p.price_group_id === pg.id ? index : -1).filter((index) => index >= 0), tiers: (tiers ?? []).filter((tier) => tier.price_group_id === pg.id).map((tier) => ({ id: tier.id, minQuantity: String(tier.min_quantity), maxQuantity: tier.max_quantity === null ? "" : String(tier.max_quantity), unitPrice: String(tier.unit_price) })) }));
     return NextResponse.json({ data: { ...group, products: productRows, priceGroups: groupRows } });
   } catch (error) {
     console.error("GET /api/group-buys/[id]", error);
@@ -111,66 +107,47 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     const body = await request.json() as Record<string, unknown>;
     const { name, description, start, end, products, priceGroups } = validatePayload(body);
     const supabase = getSupabaseAdmin();
-
     const { error: groupError } = await supabase.from("group_buys").update({ name, description: description || null, start_at: start.toISOString(), end_at: end.toISOString() }).eq("id", id);
     if (groupError) throw groupError;
-
     const { data: existingProducts, error: existingProductError } = await supabase.from("products").select("id").eq("group_buy_id", id);
     if (existingProductError) throw existingProductError;
     const existingIds = new Set((existingProducts ?? []).map((p) => p.id as string));
     const keptIds = new Set<string>();
     const productIds: string[] = [];
-
     for (let index = 0; index < products.length; index += 1) {
       const p = products[index];
       const productId = typeof p.id === "string" && existingIds.has(p.id) ? p.id : null;
-      const values = {
-        group_buy_id: id,
-        name: String(p.name).trim(),
-        description: String(p.description ?? "").trim() || null,
-        unit: String(p.unit ?? "").trim() || null,
-        price: Number(p.price),
-        quantity: Number(p.quantity),
-        max_quantity: String(p.maxQuantity ?? "").trim() ? Number(p.maxQuantity) : null,
-        sort_order: index,
-      };
+      const values = { group_buy_id: id, name: String(p.name).trim(), description: String(p.description ?? "").trim() || null, unit: String(p.unit ?? "").trim() || null, price: Number(p.price), quantity: Number(p.quantity), max_quantity: String(p.maxQuantity ?? "").trim() ? Number(p.maxQuantity) : null, sort_order: index };
       if (productId) {
         const { error } = await supabase.from("products").update(values).eq("id", productId).eq("group_buy_id", id);
         if (error) throw error;
-        keptIds.add(productId);
-        productIds.push(productId);
+        keptIds.add(productId); productIds.push(productId);
       } else {
         const { data, error } = await supabase.from("products").insert(values).select("id").single();
         if (error) throw error;
-        keptIds.add(data.id);
-        productIds.push(data.id);
+        keptIds.add(data.id); productIds.push(data.id);
       }
     }
-
     const removedIds = [...existingIds].filter((productId) => !keptIds.has(productId));
     if (removedIds.length) {
       const { error } = await supabase.from("products").delete().in("id", removedIds).eq("group_buy_id", id);
       if (error) throw new Error(`刪除已移除的商品失敗，可能已有員工訂單：${error.message}`);
     }
-
     const { error: clearProductGroupsError } = await supabase.from("products").update({ price_group_id: null }).eq("group_buy_id", id);
     if (clearProductGroupsError) throw clearProductGroupsError;
-
     const { data: oldGroups, error: oldGroupsError } = await supabase.from("group_buy_price_groups").select("id").eq("group_buy_id", id);
     if (oldGroupsError) throw oldGroupsError;
     if ((oldGroups ?? []).length) {
       const { error } = await supabase.from("group_buy_price_groups").delete().eq("group_buy_id", id);
       if (error) throw error;
     }
-
     for (let groupIndex = 0; groupIndex < priceGroups.length; groupIndex += 1) {
       const input = priceGroups[groupIndex];
       const { data: priceGroup, error: priceGroupError } = await supabase.from("group_buy_price_groups").insert({ group_buy_id: id, name: String(input.name ?? `價格群組 ${groupIndex + 1}`).trim() || `價格群組 ${groupIndex + 1}`, sort_order: groupIndex }).select("id").single();
       if (priceGroupError) throw priceGroupError;
       const indexes = Array.isArray(input.productIndexes) ? input.productIndexes as unknown[] : [];
       for (const rawIndex of indexes) {
-        const index = Number(rawIndex);
-        const productId = productIds[index];
+        const index = Number(rawIndex); const productId = productIds[index];
         if (!productId) throw new Error(`價格群組 ${groupIndex + 1} 的商品選擇不正確`);
         const { error } = await supabase.from("products").update({ price_group_id: priceGroup.id }).eq("id", productId).eq("group_buy_id", id);
         if (error) throw error;
@@ -179,7 +156,6 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       const { error: tierError } = await supabase.from("group_buy_price_tiers").insert(tiers);
       if (tierError) throw tierError;
     }
-
     const { data: updated, error: updatedError } = await supabase.from("group_buys").select("id,name,description,start_at,end_at,status,created_at").eq("id", id).single();
     if (updatedError) throw updatedError;
     return NextResponse.json({ data: updated });
