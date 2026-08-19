@@ -13,12 +13,7 @@ type ProductInput = {
   maxQuantity?: unknown;
   priceGroupId?: unknown;
 };
-type PriceGroupInput = {
-  id?: unknown;
-  name?: unknown;
-  productIndexes?: unknown;
-  tiers?: unknown;
-};
+type PriceGroupInput = { id?: unknown; name?: unknown; productIndexes?: unknown; tiers?: unknown };
 
 function parseTaipeiDateTime(value: string) {
   const normalized = value.trim();
@@ -34,7 +29,6 @@ function validateTiers(tiers: PriceTierInput[]) {
     const price = Number(tier.unitPrice);
     return { min, max, price };
   });
-
   for (let i = 0; i < normalized.length; i += 1) {
     const tier = normalized[i];
     if (!Number.isInteger(tier.min) || tier.min < 1 || (tier.max !== null && (!Number.isInteger(tier.max) || tier.max < tier.min)) || !Number.isFinite(tier.price) || tier.price < 0) {
@@ -55,7 +49,16 @@ export async function GET() {
     const supabase = getSupabaseAdmin();
     const { data, error } = await supabase.from("group_buys").select("id,name,description,start_at,end_at,status,created_at").order("start_at", { ascending: false });
     if (error) throw error;
-    return NextResponse.json({ data });
+
+    const now = Date.now();
+    const openExpired = (data ?? []).filter((group) => group.status === "open" && new Date(group.end_at).getTime() <= now).map((group) => group.id);
+    if (openExpired.length) {
+      const { error: closeError } = await supabase.from("group_buys").update({ status: "closed" }).in("id", openExpired).eq("status", "open");
+      if (closeError) throw closeError;
+    }
+
+    const normalized = (data ?? []).map((group) => openExpired.includes(group.id) ? { ...group, status: "closed" } : group);
+    return NextResponse.json({ data: normalized });
   } catch (error) {
     console.error("GET /api/group-buys", error);
     return NextResponse.json({ error: "無法取得團購資料" }, { status: 500 });
@@ -64,9 +67,7 @@ export async function GET() {
 
 export async function POST(request: Request) {
   const cookieStore = await cookies();
-  if (!isValidAdminToken(cookieStore.get(adminCookieName)?.value)) {
-    return NextResponse.json({ error: "需要管理員權限" }, { status: 401 });
-  }
+  if (!isValidAdminToken(cookieStore.get(adminCookieName)?.value)) return NextResponse.json({ error: "需要管理員權限" }, { status: 401 });
 
   let createdGroupId: string | null = null;
   try {
@@ -77,7 +78,6 @@ export async function POST(request: Request) {
     const endAt = String(body.endAt ?? "").trim();
     const products = Array.isArray(body.products) ? (body.products as ProductInput[]) : [];
     const priceGroups = Array.isArray(body.priceGroups) ? (body.priceGroups as PriceGroupInput[]) : [];
-
     if (!name || !startAt || !endAt) return NextResponse.json({ error: "請填寫團購名稱、開始時間與結束時間" }, { status: 400 });
     const start = parseTaipeiDateTime(startAt), end = parseTaipeiDateTime(endAt);
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return NextResponse.json({ error: "開始或結束時間格式不正確" }, { status: 400 });
@@ -109,25 +109,14 @@ export async function POST(request: Request) {
     }
 
     const supabase = getSupabaseAdmin();
-    const { data: group, error: groupError } = await supabase.from("group_buys").insert({
-      name, description: description || null, start_at: start.toISOString(), end_at: end.toISOString(), status: "open",
-    }).select("id,name,description,start_at,end_at,status,created_at").single();
+    const { data: group, error: groupError } = await supabase.from("group_buys").insert({ name, description: description || null, start_at: start.toISOString(), end_at: end.toISOString(), status: "open" }).select("id,name,description,start_at,end_at,status,created_at").single();
     if (groupError) throw new Error(`建立團購失敗：${groupError.message}`);
     createdGroupId = group.id;
 
     const createdProducts: { id: string }[] = [];
     for (let index = 0; index < products.length; index += 1) {
       const product = products[index];
-      const { data: created, error: productError } = await supabase.from("products").insert({
-        group_buy_id: group.id,
-        name: String(product.name).trim(),
-        description: String(product.description ?? "").trim() || null,
-        unit: String(product.unit ?? "").trim() || null,
-        price: Number(product.price),
-        quantity: Number(product.quantity),
-        max_quantity: String(product.maxQuantity ?? "").trim() ? Number(product.maxQuantity) : null,
-        sort_order: index,
-      }).select("id").single();
+      const { data: created, error: productError } = await supabase.from("products").insert({ group_buy_id: group.id, name: String(product.name).trim(), description: String(product.description ?? "").trim() || null, unit: String(product.unit ?? "").trim() || null, price: Number(product.price), quantity: Number(product.quantity), max_quantity: String(product.maxQuantity ?? "").trim() ? Number(product.maxQuantity) : null, sort_order: index }).select("id").single();
       if (productError) throw new Error(`商品 ${index + 1} 建立失敗：${productError.message}`);
       createdProducts.push(created);
     }
@@ -137,32 +126,22 @@ export async function POST(request: Request) {
       const tiers = Array.isArray(input.tiers) ? input.tiers as PriceTierInput[] : [];
       let normalized;
       try { normalized = validateTiers(tiers); } catch (error) { throw new Error(`價格群組 ${groupIndex + 1}：${error instanceof Error ? error.message : "價格階梯設定錯誤"}`); }
-
-      const { data: priceGroup, error: priceGroupError } = await supabase.from("group_buy_price_groups").insert({
-        group_buy_id: group.id,
-        name: String(input.name ?? `價格群組 ${groupIndex + 1}`).trim() || `價格群組 ${groupIndex + 1}`,
-        sort_order: groupIndex,
-      }).select("id").single();
+      const { data: priceGroup, error: priceGroupError } = await supabase.from("group_buy_price_groups").insert({ group_buy_id: group.id, name: String(input.name ?? `價格群組 ${groupIndex + 1}`).trim() || `價格群組 ${groupIndex + 1}`, sort_order: groupIndex }).select("id").single();
       if (priceGroupError) throw new Error(`價格群組 ${groupIndex + 1} 建立失敗：${priceGroupError.message}`);
-
       const indexes = input.productIndexes as unknown[];
       for (const rawIndex of indexes) {
         const index = Number(rawIndex);
         const { error } = await supabase.from("products").update({ price_group_id: priceGroup.id }).eq("id", createdProducts[index].id);
         if (error) throw new Error(`商品 ${index + 1} 價格群組設定失敗：${error.message}`);
       }
-
       const tierRows = normalized.map((tier) => ({ group_buy_id: group.id, price_group_id: priceGroup.id, min_quantity: tier.min, max_quantity: tier.max, unit_price: tier.price }));
       const { error: tierError } = await supabase.from("group_buy_price_tiers").insert(tierRows);
       if (tierError) throw new Error(`價格群組 ${groupIndex + 1} 階梯建立失敗：${tierError.message}`);
     }
-
     return NextResponse.json({ data: group }, { status: 201 });
   } catch (error) {
     console.error("POST /api/group-buys", error);
-    if (createdGroupId) {
-      try { await getSupabaseAdmin().from("group_buys").delete().eq("id", createdGroupId); } catch (cleanupError) { console.error("Cleanup failed", cleanupError); }
-    }
+    if (createdGroupId) { try { await getSupabaseAdmin().from("group_buys").delete().eq("id", createdGroupId); } catch (cleanupError) { console.error("Cleanup failed", cleanupError); } }
     return NextResponse.json({ error: error instanceof Error ? error.message : "建立團購失敗，請稍後再試" }, { status: 500 });
   }
 }
