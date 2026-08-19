@@ -51,6 +51,12 @@ export default function Home() {
   const [orderStep, setOrderStep] = useState<Step>("products");
   const [savingOrder, setSavingOrder] = useState(false);
   const [orderError, setOrderError] = useState("");
+  const [editingOrder, setEditingOrder] = useState<MyOrder | null>(null);
+  const [editGroup, setEditGroup] = useState<GroupDetail | null>(null);
+  const [editQuantities, setEditQuantities] = useState<Record<string, number>>({});
+  const [editStep, setEditStep] = useState<Step>("products");
+  const [editError, setEditError] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
   const [showAdminLogin, setShowAdminLogin] = useState(false);
   const [adminPassword, setAdminPassword] = useState("");
   const [adminError, setAdminError] = useState("");
@@ -152,10 +158,7 @@ export default function Home() {
 
   const selectedItems = useMemo(() => selectedGroup?.products.filter((product) => (quantities[product.id] ?? 0) > 0).map((product) => ({ product, quantity: quantities[product.id] ?? 0 })) ?? [], [selectedGroup, quantities]);
   const previewTotalQuantity = selectedItems.reduce((sum, item) => sum + item.quantity, 0);
-  const previewAmount = selectedGroup ? selectedItems.reduce((sum, item) => {
-    const groupQuantity = getGroupQuantity(selectedGroup, item.product, selectedItems);
-    return sum + item.quantity * getTierPrice(selectedGroup, item.product, groupQuantity);
-  }, 0) : 0;
+  const previewAmount = selectedGroup ? selectedItems.reduce((sum, item) => sum + item.quantity * getTierPrice(selectedGroup, item.product, getGroupQuantity(selectedGroup, item.product, selectedItems)), 0) : 0;
 
   async function confirmOrder() {
     if (!member?.id || !selectedGroup) return;
@@ -178,6 +181,63 @@ export default function Home() {
       setOrderError(error instanceof Error ? error.message : "訂單送出失敗");
     } finally {
       setSavingOrder(false);
+    }
+  }
+
+  async function openEditOrder(order: MyOrder) {
+    if (!order.group || order.group.status !== "open") return;
+    setEditError("");
+    setEditStep("products");
+    setEditingOrder(order);
+    setEditGroup(null);
+    setEditQuantities(Object.fromEntries(order.items.map((item) => [item.productId, item.quantity])));
+    try {
+      const response = await fetch(`/api/group-buys/${order.group_buy_id}/public`, { cache: "no-store" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "無法取得團購資料");
+      setEditGroup(result.data);
+    } catch (error) {
+      setEditError(error instanceof Error ? error.message : "無法取得團購資料");
+    }
+  }
+
+  function closeEditOrder() {
+    setEditingOrder(null);
+    setEditGroup(null);
+    setEditQuantities({});
+    setEditStep("products");
+    setEditError("");
+  }
+
+  function setEditQuantity(productId: string, value: number, max: number | null) {
+    const safe = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+    setEditQuantities((current) => ({ ...current, [productId]: max != null ? Math.min(safe, max) : safe }));
+  }
+
+  const editSelectedItems = useMemo(() => editGroup?.products.filter((product) => (editQuantities[product.id] ?? 0) > 0).map((product) => ({ product, quantity: editQuantities[product.id] ?? 0 })) ?? [], [editGroup, editQuantities]);
+  const editTotalQuantity = editSelectedItems.reduce((sum, item) => sum + item.quantity, 0);
+  const editPreviewAmount = editGroup ? editSelectedItems.reduce((sum, item) => sum + item.quantity * getTierPrice(editGroup, item.product, getGroupQuantity(editGroup, item.product, editSelectedItems)), 0) : 0;
+
+  async function confirmEditOrder() {
+    if (!member?.id || !editingOrder || !editGroup) return;
+    if (!editSelectedItems.length) {
+      setEditError("請至少保留一項商品。");
+      setEditStep("products");
+      return;
+    }
+    setSavingEdit(true);
+    setEditError("");
+    try {
+      const response = await fetch("/api/orders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ memberId: member.id, groupBuyId: editingOrder.group_buy_id, items: editSelectedItems.map((item) => ({ productId: item.product.id, quantity: item.quantity })) }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "訂單修改失敗");
+      closeEditOrder();
+      await loadOrders();
+      await loadGroups();
+    } catch (error) {
+      setEditError(error instanceof Error ? error.message : "訂單修改失敗");
+    } finally {
+      setSavingEdit(false);
     }
   }
 
@@ -217,9 +277,7 @@ export default function Home() {
     <aside className="w-full shrink-0 border-b border-[var(--border)] bg-white md:fixed md:inset-y-0 md:w-64 md:border-b-0 md:border-r"><div className="flex h-full flex-col p-5">
       <div className="mb-8"><p className="text-sm font-medium text-[var(--accent)]">Company Group Buy</p><h1 className="mt-1 text-xl font-bold">團購系統</h1></div>
       <div className="rounded-2xl bg-[#f4f5f1] p-4"><p className="font-semibold">{member.name}</p><p className="mt-1 text-xs text-[var(--muted)]">工號：{member.employeeId}</p></div>
-      <nav className="mt-6 space-y-2">
-        {(Object.keys(menuTitle) as Menu[]).map((menu) => <button key={menu} onClick={() => setActiveMenu(menu)} className={`w-full rounded-xl px-4 py-3 text-left text-sm font-semibold ${activeMenu === menu ? "bg-[var(--accent)] text-white" : "hover:bg-[#f4f5f1]"}`}>{menuTitle[menu]}</button>)}
-      </nav>
+      <nav className="mt-6 space-y-2">{(Object.keys(menuTitle) as Menu[]).map((menu) => <button key={menu} onClick={() => setActiveMenu(menu)} className={`w-full rounded-xl px-4 py-3 text-left text-sm font-semibold ${activeMenu === menu ? "bg-[var(--accent)] text-white" : "hover:bg-[#f4f5f1]"}`}>{menuTitle[menu]}</button>)}</nav>
       <div className="mt-auto space-y-2 pt-6"><button onClick={() => { setEmployeeId(member.employeeId); setName(member.name); setMemberError(""); setShowMemberForm(true); }} className="w-full rounded-xl border border-[var(--border)] px-4 py-2.5 text-sm">修改身分資料</button><button onClick={() => setShowAdminLogin(true)} className="w-full rounded-xl px-4 py-2.5 text-left text-xs text-[var(--muted)] hover:bg-[#f4f5f1]">管理員入口</button></div>
     </div></aside>
 
@@ -227,25 +285,26 @@ export default function Home() {
       <header className="mb-8 flex items-center justify-between"><div><p className="text-sm text-[var(--muted)]">{menuSubtitle[activeMenu]}</p><h2 className="mt-1 text-3xl font-bold">{menuTitle[activeMenu]}</h2></div><button onClick={() => { loadGroups(); loadOrders(); }} className="rounded-xl border border-[var(--border)] bg-white px-4 py-2 text-sm">重新整理</button></header>
 
       {activeMenu === "current" && <>
-        <section className="mb-10"><div className="mb-4"><h3 className="text-xl font-bold">我的訂單</h3><p className="mt-1 text-sm text-[var(--muted)]">目前仍在進行中的團購訂單。</p></div>{currentOrders.length ? <div className="space-y-3">{currentOrders.map((order) => <OrderCard key={order.id} order={order} />)}</div> : <Empty text="目前還沒有進行中的訂單。" />}</section>
+        <section className="mb-10"><div className="mb-4"><h3 className="text-xl font-bold">我的訂單</h3><p className="mt-1 text-sm text-[var(--muted)]">點擊團購名稱可查看明細。</p></div>{currentOrders.length ? <div className="space-y-3">{currentOrders.map((order) => <OrderCard key={order.id} order={order} onEdit={() => openEditOrder(order)} />)}</div> : <Empty text="目前還沒有進行中的訂單。" />}</section>
         <section><div className="mb-4"><h3 className="text-xl font-bold">可參加的團購</h3><p className="mt-1 text-sm text-[var(--muted)]">點擊「進入團購」開始選購。</p></div>{loading ? <Empty text="正在讀取..." /> : openGroups.length ? <div className="grid gap-4 md:grid-cols-2">{openGroups.map((group) => <article key={group.id} className="rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-start justify-between gap-3"><div><h4 className="text-lg font-bold">{group.name}</h4><p className="mt-1 text-sm text-[var(--muted)]">截止：{formatDate(group.end_at)}</p></div><StatusBadge status={group.status} /></div>{group.description && <p className="mt-3 text-sm text-[var(--muted)]">{group.description}</p>}<button onClick={() => openOrder(group)} className="mt-5 w-full rounded-xl bg-[var(--accent)] px-4 py-3 font-semibold text-white transition hover:opacity-90">進入團購</button></article>)}</div> : <Empty text="目前沒有進行中的團購。" />}</section>
       </>}
 
       {activeMenu === "closed" && <section><div className="mb-4"><h3 className="text-xl font-bold">截止的訂單</h3><p className="mt-1 text-sm text-[var(--muted)]">團購截止後會保留在這裡，等待管理員完成計算。</p></div>{closedOrders.length ? <div className="space-y-3">{closedOrders.map((order) => <OrderCard key={order.id} order={order} />)}</div> : <Empty text="目前沒有截止的訂單。" />}</section>}
-
       {activeMenu === "history" && <section><div className="mb-4"><h3 className="text-xl font-bold">歷史訂單</h3><p className="mt-1 text-sm text-[var(--muted)]">管理員發布計算完成後，訂單會移到這裡並顯示最終金額。</p></div>{historyOrders.length ? <div className="space-y-4">{historyOrders.map((order) => <HistoryOrderCard key={order.id} order={order} />)}</div> : <Empty text="目前還沒有歷史訂單。" />}</section>}
-
       {activeMenu === "myHistory" && <section><div className="mb-4"><h3 className="text-xl font-bold">我的歷史訂單</h3><p className="mt-1 text-sm text-[var(--muted)]">只顯示你本人曾經參加過、且管理員已發布計算完成的團購。</p></div>{myHistoryOrders.length ? <div className="space-y-4">{myHistoryOrders.map((order) => <HistoryOrderCard key={order.id} order={order} />)}</div> : <Empty text="你目前還沒有參加過已完成計算的團購。" />}</section>}
     </div></section>
 
     {showMemberForm && <MemberModal employeeId={employeeId} name={name} setEmployeeId={setEmployeeId} setName={setName} error={memberError} saving={savingMember} onCancel={() => setShowMemberForm(false)} onSave={saveMember} />}
     {showAdminLogin && <AdminModal password={adminPassword} setPassword={setAdminPassword} error={adminError} logging={adminLoggingIn} onCancel={() => setShowAdminLogin(false)} onSubmit={adminLogin} />}
     {selectedGroup && <OrderModal group={selectedGroup} quantities={quantities} setQuantity={setQuantity} step={orderStep} setStep={setOrderStep} selectedItems={selectedItems} totalQuantity={previewTotalQuantity} previewAmount={previewAmount} error={orderError} saving={savingOrder} onClose={closeOrder} onConfirm={confirmOrder} />}
+    {editingOrder && <EditOrderModal group={editGroup} quantities={editQuantities} setQuantity={setEditQuantity} step={editStep} setStep={setEditStep} selectedItems={editSelectedItems} totalQuantity={editTotalQuantity} previewAmount={editPreviewAmount} error={editError} saving={savingEdit} onClose={closeEditOrder} onConfirm={confirmEditOrder} />}
   </main>;
 }
 
-function OrderCard({ order }: { order: MyOrder }) {
-  return <article className="rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-center justify-between gap-3"><div><h4 className="font-bold">{order.group?.name ?? "團購"}</h4><p className="mt-1 text-sm text-[var(--muted)]">下單時間：{formatDate(order.created_at)}</p></div>{order.group && <StatusBadge status={order.group.status} />}</div><div className="mt-4 grid gap-2 sm:grid-cols-2">{order.items.map((item) => <div key={item.productId} className="rounded-xl bg-[#f7f8f5] px-4 py-3 text-sm"><span>{item.productName}</span><span className="float-right font-semibold">{item.quantity} {item.unit}</span></div>)}</div></article>;
+function OrderCard({ order, onEdit }: { order: MyOrder; onEdit?: () => void }) {
+  const [expanded, setExpanded] = useState(false);
+  const canEdit = order.group?.status === "open" && !!onEdit;
+  return <article className="rounded-3xl bg-white shadow-sm overflow-hidden"><button onClick={() => setExpanded((value) => !value)} className="flex w-full items-center justify-between px-5 py-5 text-left hover:bg-[#fafbf9]"><span className="font-bold">{order.group?.name ?? "團購"}</span><span className="text-sm text-[var(--muted)]">{expanded ? "收起" : "查看明細"}</span></button>{expanded && <div className="border-t border-[var(--border)] px-5 pb-5 pt-4"><div className="divide-y rounded-2xl border border-[var(--border)]">{order.items.map((item) => <div key={item.productId} className="flex items-center justify-between px-4 py-3 text-sm"><span>{item.productName}</span><span className="font-semibold">{item.quantity} {item.unit}</span></div>)}</div><div className="mt-4 flex justify-end gap-3"><button onClick={() => setExpanded(false)} className="rounded-xl border border-[var(--border)] px-4 py-2.5 text-sm">收起</button>{canEdit && <button onClick={(event) => { event.stopPropagation(); onEdit?.(); }} className="rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white">修改</button>}</div></div>}</article>;
 }
 
 function HistoryOrderCard({ order }: { order: MyOrder }) {
@@ -264,8 +323,9 @@ function AdminModal({ password, setPassword, error, logging, onCancel, onSubmit 
 }
 
 function OrderModal({ group, quantities, setQuantity, step, setStep, selectedItems, totalQuantity, previewAmount, error, saving, onClose, onConfirm }: { group: GroupDetail; quantities: Record<string, number>; setQuantity: (id: string, value: number, max: number | null) => void; step: Step; setStep: (step: Step) => void; selectedItems: { product: Product; quantity: number }[]; totalQuantity: number; previewAmount: number; error: string; saving: boolean; onClose: () => void; onConfirm: () => void }) {
-  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"><div className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-3xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-5"><div><p className="text-sm font-medium text-[var(--accent)]">{step === "products" ? "選擇商品" : "確認訂單"}</p><h3 className="mt-1 text-2xl font-bold">{group.name}</h3></div><button onClick={onClose} className="rounded-xl border border-[var(--border)] px-4 py-2">關閉</button></div><div className="overflow-y-auto p-6">
-    {step === "products" ? <div className="space-y-3">{group.products.map((product) => <div key={product.id} className="rounded-2xl border border-[var(--border)] p-4"><div className="flex items-center justify-between gap-3"><div><p className="font-semibold">{product.name}</p>{product.description && <p className="mt-1 text-sm text-[var(--muted)]">{product.description}</p>}<p className="mt-1 text-sm text-[var(--muted)]">單位：{product.unit ?? "個"}｜參考單價：$ {formatMoney(product.price)}</p></div><input type="number" min={0} max={product.max_quantity ?? undefined} value={quantities[product.id] ?? 0} onChange={(e) => setQuantity(product.id, Number(e.target.value), product.max_quantity)} className="w-28 rounded-xl border border-[var(--border)] px-3 py-2 text-center" /></div></div>)}</div> : <div><p className="text-sm text-[var(--muted)]">請確認以下訂購內容。按下確認後會正式送出訂單。</p><div className="mt-5 divide-y rounded-2xl border border-[var(--border)]">{selectedItems.map((item) => { const groupQuantity = getGroupQuantity(group, item.product, selectedItems); const price = getTierPrice(group, item.product, groupQuantity); return <div key={item.product.id} className="flex items-center justify-between px-4 py-4"><span>{item.product.name} × {item.quantity} {item.product.unit ?? "個"}</span><span className="font-bold">$ {formatMoney(item.quantity * price)}</span></div>; })}</div><div className="mt-5 rounded-2xl bg-[#f4f5f1] p-5"><div className="flex justify-between text-sm"><span>本次總數量</span><span>{totalQuantity}</span></div><div className="mt-2 flex justify-between"><span className="font-semibold">目前預估金額</span><span className="text-xl font-bold text-[var(--accent)]">$ {formatMoney(previewAmount)}</span></div><p className="mt-3 text-xs text-[var(--muted)]">最終單價會依團購截止後，所有員工合併的實際合計數量重新計算。</p></div></div>}
-    {error && <p className="mt-4 text-sm font-medium text-red-600">{error}</p>}
-  </div><div className="flex items-center justify-between border-t border-[var(--border)] px-6 py-5">{step === "products" ? <button onClick={onClose} className="rounded-xl border border-[var(--border)] px-5 py-2.5">上一步</button> : <button onClick={() => setStep("products")} className="rounded-xl border border-[var(--border)] px-5 py-2.5">上一步</button>}{step === "products" ? <button onClick={() => { if (!selectedItems.length) return; setStep("confirm"); }} className="rounded-xl bg-[var(--accent)] px-6 py-3 font-semibold text-white">下一步</button> : <button onClick={onConfirm} disabled={saving} className="rounded-xl bg-[var(--accent)] px-6 py-3 font-semibold text-white disabled:opacity-50">{saving ? "送出中..." : "確認"}</button>}</div></div></div>;
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"><div className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-3xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-5"><div><p className="text-sm font-medium text-[var(--accent)]">{step === "products" ? "選擇商品" : "確認訂單"}</p><h3 className="mt-1 text-2xl font-bold">{group.name}</h3></div><button onClick={onClose} className="rounded-xl border border-[var(--border)] px-4 py-2">關閉</button></div><div className="overflow-y-auto p-6">{step === "products" ? <div className="space-y-3">{group.products.map((product) => <div key={product.id} className="rounded-2xl border border-[var(--border)] p-4"><div className="flex items-center justify-between gap-3"><div><p className="font-semibold">{product.name}</p>{product.description && <p className="mt-1 text-sm text-[var(--muted)]">{product.description}</p>}<p className="mt-1 text-sm text-[var(--muted)]">單位：{product.unit ?? "個"}｜參考單價：$ {formatMoney(product.price)}</p></div><input type="number" min={0} max={product.max_quantity ?? undefined} value={quantities[product.id] ?? 0} onChange={(e) => setQuantity(product.id, Number(e.target.value), product.max_quantity)} className="w-28 rounded-xl border border-[var(--border)] px-3 py-2 text-center" /></div></div>)}</div> : <div><p className="text-sm text-[var(--muted)]">請確認以下訂購內容。按下確認後會正式送出訂單。</p><div className="mt-5 divide-y rounded-2xl border border-[var(--border)]">{selectedItems.map((item) => { const groupQuantity = getGroupQuantity(group, item.product, selectedItems); const price = getTierPrice(group, item.product, groupQuantity); return <div key={item.product.id} className="flex items-center justify-between px-4 py-4"><span>{item.product.name} × {item.quantity} {item.product.unit ?? "個"}</span><span className="font-bold">$ {formatMoney(item.quantity * price)}</span></div>; })}</div><div className="mt-5 rounded-2xl bg-[#f4f5f1] p-5"><div className="flex justify-between text-sm"><span>本次總數量</span><span>{totalQuantity}</span></div><div className="mt-2 flex justify-between"><span className="font-semibold">目前預估金額</span><span className="text-xl font-bold text-[var(--accent)]">$ {formatMoney(previewAmount)}</span></div><p className="mt-3 text-xs text-[var(--muted)]">最終單價會依團購截止後，所有員工合併的實際合計數量重新計算。</p></div></div>}{error && <p className="mt-4 text-sm font-medium text-red-600">{error}</p>}</div><div className="flex items-center justify-between border-t border-[var(--border)] px-6 py-5">{step === "products" ? <button onClick={onClose} className="rounded-xl border border-[var(--border)] px-5 py-2.5">上一步</button> : <button onClick={() => setStep("products")} className="rounded-xl border border-[var(--border)] px-5 py-2.5">上一步</button>}{step === "products" ? <button onClick={() => { if (!selectedItems.length) return; setStep("confirm"); }} className="rounded-xl bg-[var(--accent)] px-6 py-3 font-semibold text-white">下一步</button> : <button onClick={onConfirm} disabled={saving} className="rounded-xl bg-[var(--accent)] px-6 py-3 font-semibold text-white disabled:opacity-50">{saving ? "送出中..." : "確認"}</button>}</div></div></div>;
+}
+
+function EditOrderModal({ group, quantities, setQuantity, step, setStep, selectedItems, totalQuantity, previewAmount, error, saving, onClose, onConfirm }: { group: GroupDetail | null; quantities: Record<string, number>; setQuantity: (id: string, value: number, max: number | null) => void; step: Step; setStep: (step: Step) => void; selectedItems: { product: Product; quantity: number }[]; totalQuantity: number; previewAmount: number; error: string; saving: boolean; onClose: () => void; onConfirm: () => void }) {
+  return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"><div className="flex max-h-[85vh] w-full max-w-lg flex-col rounded-3xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-4"><div><p className="text-sm font-medium text-[var(--accent)]">修改訂單</p><h3 className="mt-1 text-xl font-bold">{group?.name ?? "訂單"}</h3></div><button onClick={onClose} className="rounded-xl border border-[var(--border)] px-3 py-2 text-sm">關閉</button></div><div className="overflow-y-auto p-5">{!group ? <p className="text-sm text-red-600">{error || "正在讀取團購資料..."}</p> : step === "products" ? <div className="space-y-3">{group.products.map((product) => <div key={product.id} className="flex items-center justify-between gap-3 rounded-2xl border border-[var(--border)] p-4"><div><p className="font-semibold">{product.name}</p><p className="mt-1 text-xs text-[var(--muted)]">單位：{product.unit ?? "個"}</p></div><input type="number" min={0} max={product.max_quantity ?? undefined} value={quantities[product.id] ?? 0} onChange={(e) => setQuantity(product.id, Number(e.target.value), product.max_quantity)} className="w-24 rounded-xl border border-[var(--border)] px-3 py-2 text-center" /></div>)}</div> : <div><p className="text-sm text-[var(--muted)]">修改完成，請確認新的訂單內容與預估金額。</p><div className="mt-4 divide-y rounded-2xl border border-[var(--border)]">{selectedItems.map((item) => { const groupQuantity = getGroupQuantity(group, item.product, selectedItems); const price = getTierPrice(group, item.product, groupQuantity); return <div key={item.product.id} className="flex items-center justify-between px-4 py-3 text-sm"><span>{item.product.name} × {item.quantity} {item.product.unit ?? "個"}</span><span className="font-semibold">$ {formatMoney(item.quantity * price)}</span></div>; })}</div><div className="mt-4 rounded-2xl bg-[#f4f5f1] p-4"><div className="flex justify-between text-sm"><span>修改後總數量</span><span>{totalQuantity}</span></div><div className="mt-2 flex justify-between"><span className="font-semibold">修改後預估總金額</span><span className="text-xl font-bold text-[var(--accent)]">$ {formatMoney(previewAmount)}</span></div><p className="mt-2 text-xs text-[var(--muted)]">最終價格仍會依團購截止後所有員工的合併數量重新計算。</p></div></div>}{error && <p className="mt-4 text-sm font-medium text-red-600">{error}</p>}</div><div className="flex items-center justify-between border-t border-[var(--border)] px-5 py-4"><button onClick={step === "products" ? onClose : () => setStep("products")} className="rounded-xl border border-[var(--border)] px-4 py-2.5 text-sm">{step === "products" ? "取消" : "上一步"}</button>{step === "products" ? <button disabled={!group || !selectedItems.length} onClick={() => { if (selectedItems.length) setStep("confirm"); }} className="rounded-xl bg-[var(--accent)] px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50">下一步</button> : <button onClick={onConfirm} disabled={saving} className="rounded-xl bg-[var(--accent)] px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50">{saving ? "儲存中..." : "確認修改"}</button>}</div></div></div>;
 }
