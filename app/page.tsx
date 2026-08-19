@@ -10,7 +10,7 @@ type PriceTier = { id: string; price_group_id: string; min_quantity: number; max
 type GroupDetail = GroupBuy & { products: Product[]; priceGroups: PriceGroup[]; priceTiers: PriceTier[]; totalAmount: number | null };
 type MyOrder = { id: string; group_buy_id: string; created_at: string; group?: GroupBuy; items: { productId: string; productName: string; unit: string; quantity: number; finalAmount: number | null }[]; isFinalized: boolean };
 type Step = "products" | "confirm";
-type Menu = "current" | "closed" | "history";
+type Menu = "current" | "closed" | "history" | "myHistory";
 
 function formatDate(value: string) {
   return new Date(value).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
@@ -204,13 +204,14 @@ export default function Home() {
   const currentOrders = myOrders.filter((order) => order.group?.status === "open");
   const closedOrders = myOrders.filter((order) => order.group?.status === "closed" || order.group?.status === "reviewing");
   const historyOrders = myOrders.filter((order) => order.group?.status === "finalized" || order.isFinalized);
+  const myHistoryOrders = myOrders.filter((order) => !order.id.startsWith("group-") && (order.group?.status === "finalized" || order.isFinalized));
 
   if (!member) {
     return <main className="min-h-screen px-5 py-10"><div className="mx-auto max-w-md rounded-3xl bg-white p-7 shadow-sm"><p className="text-sm font-medium text-[var(--accent)]">Company Group Buy</p><h1 className="mt-2 text-2xl font-bold">公司團購</h1><p className="mt-2 text-sm text-[var(--muted)]">第一次使用請輸入工號與姓名，之後此電腦會記住你的資料。</p><button onClick={() => { setMemberError(""); setEmployeeId(""); setName(""); setShowMemberForm(true); }} className="mt-6 w-full rounded-xl bg-[var(--accent)] px-4 py-3 font-semibold text-white">登入團購系統</button><div className="mt-6 text-center"><button onClick={() => setShowAdminLogin(true)} className="text-xs text-[var(--muted)] hover:underline">管理員入口</button></div></div>{showMemberForm && <MemberModal employeeId={employeeId} name={name} setEmployeeId={setEmployeeId} setName={setName} error={memberError} saving={savingMember} onCancel={() => setShowMemberForm(false)} onSave={saveMember} />}{showAdminLogin && <AdminModal password={adminPassword} setPassword={setAdminPassword} error={adminError} logging={adminLoggingIn} onCancel={() => setShowAdminLogin(false)} onSubmit={adminLogin} />}</main>;
   }
 
-  const menuTitle: Record<Menu, string> = { current: "進行中的訂單", closed: "截止的訂單", history: "歷史訂單" };
-  const menuSubtitle: Record<Menu, string> = { current: "Member Dashboard", closed: "Closed Orders", history: "Order History" };
+  const menuTitle: Record<Menu, string> = { current: "進行中的訂單", closed: "截止的訂單", history: "歷史訂單", myHistory: "我的歷史訂單" };
+  const menuSubtitle: Record<Menu, string> = { current: "Member Dashboard", closed: "Closed Orders", history: "Order History", myHistory: "My Order History" };
 
   return <main className="min-h-screen bg-[#f7f8f5] md:flex">
     <aside className="w-full shrink-0 border-b border-[var(--border)] bg-white md:fixed md:inset-y-0 md:w-64 md:border-b-0 md:border-r"><div className="flex h-full flex-col p-5">
@@ -233,6 +234,8 @@ export default function Home() {
       {activeMenu === "closed" && <section><div className="mb-4"><h3 className="text-xl font-bold">截止的訂單</h3><p className="mt-1 text-sm text-[var(--muted)]">團購截止後會保留在這裡，等待管理員完成計算。</p></div>{closedOrders.length ? <div className="space-y-3">{closedOrders.map((order) => <OrderCard key={order.id} order={order} />)}</div> : <Empty text="目前沒有截止的訂單。" />}</section>}
 
       {activeMenu === "history" && <section><div className="mb-4"><h3 className="text-xl font-bold">歷史訂單</h3><p className="mt-1 text-sm text-[var(--muted)]">管理員發布計算完成後，訂單會移到這裡並顯示最終金額。</p></div>{historyOrders.length ? <div className="space-y-4">{historyOrders.map((order) => <HistoryOrderCard key={order.id} order={order} />)}</div> : <Empty text="目前還沒有歷史訂單。" />}</section>}
+
+      {activeMenu === "myHistory" && <section><div className="mb-4"><h3 className="text-xl font-bold">我的歷史訂單</h3><p className="mt-1 text-sm text-[var(--muted)]">只顯示你本人曾經參加過、且管理員已發布計算完成的團購。</p></div>{myHistoryOrders.length ? <div className="space-y-4">{myHistoryOrders.map((order) => <HistoryOrderCard key={order.id} order={order} />)}</div> : <Empty text="你目前還沒有參加過已完成計算的團購。" />}</section>}
     </div></section>
 
     {showMemberForm && <MemberModal employeeId={employeeId} name={name} setEmployeeId={setEmployeeId} setName={setName} error={memberError} saving={savingMember} onCancel={() => setShowMemberForm(false)} onSave={saveMember} />}
