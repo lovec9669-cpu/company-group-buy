@@ -303,8 +303,65 @@ export default function Home() {
 
 function OrderCard({ order, onEdit }: { order: MyOrder; onEdit?: () => void }) {
   const [expanded, setExpanded] = useState(false);
+  const [groupDetail, setGroupDetail] = useState<GroupDetail | null>(null);
+  const [loadingAmount, setLoadingAmount] = useState(false);
   const canEdit = order.group?.status === "open" && !!onEdit;
-  return <article className="rounded-3xl bg-white shadow-sm overflow-hidden"><button onClick={() => setExpanded((value) => !value)} className="flex w-full items-center justify-between px-5 py-5 text-left hover:bg-[#fafbf9]"><span className="font-bold">{order.group?.name ?? "團購"}</span><span className="text-sm text-[var(--muted)]">{expanded ? "收起" : "查看明細"}</span></button>{expanded && <div className="border-t border-[var(--border)] px-5 pb-5 pt-4"><div className="divide-y rounded-2xl border border-[var(--border)]">{order.items.map((item) => <div key={item.productId} className="flex items-center justify-between px-4 py-3 text-sm"><span>{item.productName}</span><span className="font-semibold">{item.quantity} {item.unit}</span></div>)}</div><div className="mt-4 flex justify-end gap-3"><button onClick={() => setExpanded(false)} className="rounded-xl border border-[var(--border)] px-4 py-2.5 text-sm">收起</button>{canEdit && <button onClick={(event) => { event.stopPropagation(); onEdit?.(); }} className="rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white">修改</button>}</div></div>}</article>;
+
+  async function toggleExpanded() {
+    const nextExpanded = !expanded;
+    setExpanded(nextExpanded);
+    if (nextExpanded && !groupDetail && order.group_buy_id) {
+      setLoadingAmount(true);
+      try {
+        const response = await fetch(`/api/group-buys/${order.group_buy_id}/public`, { cache: "no-store" });
+        const result = await response.json();
+        if (response.ok) setGroupDetail(result.data ?? null);
+      } finally {
+        setLoadingAmount(false);
+      }
+    }
+  }
+
+  const estimatedTotal = useMemo(() => {
+    if (!groupDetail || !order.items.length) return null;
+    if (groupDetail.status === "finalized") {
+      const finalized = order.items.reduce((sum, item) => sum + (item.finalAmount ?? 0), 0);
+      return order.items.some((item) => item.finalAmount != null) ? finalized : null;
+    }
+    const selectedItems = order.items.map((item) => {
+      const product = groupDetail.products.find((p) => p.id === item.productId);
+      return product ? { product, quantity: item.quantity } : null;
+    }).filter((item): item is { product: Product; quantity: number } => item !== null);
+    if (!selectedItems.length) return null;
+    return selectedItems.reduce((sum, item) => {
+      const aggregateQuantity = groupDetail.products.filter((product) => product.price_group_id === item.product.price_group_id).reduce((groupSum, product) => groupSum + Number(product.orderedQuantity ?? 0), 0);
+      const price = getTierPrice(groupDetail, item.product, aggregateQuantity);
+      return sum + item.quantity * price;
+    }, 0);
+  }, [groupDetail, order.items]);
+
+  const displayedTotal = order.items.reduce((sum, item) => sum + (item.finalAmount ?? 0), 0);
+  const isFinalized = order.group?.status === "finalized" || order.isFinalized;
+
+  return <article className="rounded-3xl bg-white shadow-sm overflow-hidden">
+    <button onClick={toggleExpanded} className="flex w-full items-center justify-between gap-4 px-5 py-5 text-left hover:bg-[#fafbf9]">
+      <span className="font-bold">{order.group?.name ?? "團購"}</span>
+      <span className="flex items-center gap-4 text-sm">
+        <span className="font-semibold text-[var(--accent)]">{isFinalized ? `總金額 $ ${formatMoney(displayedTotal)}` : loadingAmount ? "總金額計算中..." : estimatedTotal != null ? `總金額 $ ${formatMoney(estimatedTotal)}` : "總金額 待計算"}</span>
+        <span className="text-[var(--muted)]">{expanded ? "收起" : "查看明細"}</span>
+      </span>
+    </button>
+    {expanded && <div className="border-t border-[var(--border)] px-5 pb-5 pt-4">
+      <div className="divide-y rounded-2xl border border-[var(--border)]">
+        {order.items.length ? order.items.map((item) => <div key={item.productId} className="flex items-center justify-between px-4 py-3 text-sm"><span>{item.productName}</span><span className="font-semibold">{item.quantity} {item.unit}</span></div>) : <div className="px-4 py-4 text-sm text-[var(--muted)]">目前沒有你的訂購明細。</div>}
+      </div>
+      <div className="mt-4 flex items-center justify-between rounded-2xl bg-[#f4f5f1] px-4 py-4">
+        <span className="font-semibold">總金額</span>
+        <span className="text-xl font-bold text-[var(--accent)]">{isFinalized ? `$ ${formatMoney(displayedTotal)}` : estimatedTotal != null ? `$ ${formatMoney(estimatedTotal)}` : loadingAmount ? "計算中..." : "待計算"}</span>
+      </div>
+      <div className="mt-4 flex justify-end gap-3"><button onClick={() => setExpanded(false)} className="rounded-xl border border-[var(--border)] px-4 py-2.5 text-sm">收起</button>{canEdit && <button onClick={(event) => { event.stopPropagation(); onEdit?.(); }} className="rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white">修改</button>}</div>
+    </div>}
+  </article>;
 }
 
 function HistoryOrderCard({ order }: { order: MyOrder }) {
