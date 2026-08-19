@@ -13,7 +13,6 @@ type ProductDraft = {
   description: string;
   unit: string;
   maxQuantity: string;
-  tiers: TierDraft[];
 };
 
 type GroupBuy = {
@@ -40,13 +39,7 @@ function newTier(): TierDraft {
 }
 
 function newProduct(): ProductDraft {
-  return {
-    name: "",
-    description: "",
-    unit: "個",
-    maxQuantity: "",
-    tiers: [newTier()],
-  };
+  return { name: "", description: "", unit: "個", maxQuantity: "" };
 }
 
 export default function AdminPage() {
@@ -57,6 +50,7 @@ export default function AdminPage() {
   const [startAt, setStartAt] = useState("");
   const [endAt, setEndAt] = useState("");
   const [products, setProducts] = useState<ProductDraft[]>([newProduct()]);
+  const [priceTiers, setPriceTiers] = useState<TierDraft[]>([newTier()]);
   const [groups, setGroups] = useState<GroupBuy[]>([]);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -95,14 +89,8 @@ export default function AdminPage() {
     setProducts((current) => current.map((product, i) => (i === index ? { ...product, ...patch } : product)));
   }
 
-  function updateTier(productIndex: number, tierIndex: number, patch: Partial<TierDraft>) {
-    setProducts((current) => current.map((product, i) => {
-      if (i !== productIndex) return product;
-      return {
-        ...product,
-        tiers: product.tiers.map((tier, j) => (j === tierIndex ? { ...tier, ...patch } : tier)),
-      };
-    }));
+  function updateTier(index: number, patch: Partial<TierDraft>) {
+    setPriceTiers((current) => current.map((tier, i) => (i === index ? { ...tier, ...patch } : tier)));
   }
 
   function addProduct() {
@@ -113,16 +101,16 @@ export default function AdminPage() {
     setProducts((current) => current.length === 1 ? current : current.filter((_, i) => i !== index));
   }
 
-  function addTier(productIndex: number) {
-    setProducts((current) => current.map((product, i) => i === productIndex ? { ...product, tiers: [...product.tiers, newTier()] } : product));
+  function addTier() {
+    setPriceTiers((current) => {
+      const previous = current[current.length - 1];
+      const nextMin = previous?.maxQuantity ? String(Number(previous.maxQuantity) + 1) : "";
+      return [...current, { ...newTier(), minQuantity: nextMin }];
+    });
   }
 
-  function removeTier(productIndex: number, tierIndex: number) {
-    setProducts((current) => current.map((product, i) => {
-      if (i !== productIndex) return product;
-      if (product.tiers.length === 1) return product;
-      return { ...product, tiers: product.tiers.filter((_, j) => j !== tierIndex) };
-    }));
+  function removeTier(index: number) {
+    setPriceTiers((current) => current.length === 1 ? current : current.filter((_, i) => i !== index));
   }
 
   async function createGroup(event: FormEvent) {
@@ -141,12 +129,17 @@ export default function AdminPage() {
       return;
     }
 
+    if (priceTiers.length === 0) {
+      setError("至少需要一個共用價格階梯");
+      return;
+    }
+
     setSubmitting(true);
     try {
       const response = await fetch("/api/group-buys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, description, startAt, endAt, products: filledProducts }),
+        body: JSON.stringify({ name, description, startAt, endAt, products: filledProducts, priceTiers }),
       });
 
       const result = await response.json();
@@ -155,12 +148,13 @@ export default function AdminPage() {
         return;
       }
 
-      setMessage("團購建立成功，商品與價格階梯也已建立。");
+      setMessage("團購建立成功，所有商品會共用同一套混搭價格階梯。");
       setName("");
       setDescription("");
       setStartAt("");
       setEndAt("");
       setProducts([newProduct()]);
+      setPriceTiers([newTier()]);
       await loadGroups();
     } catch {
       setError("無法連線到伺服器，請稍後再試");
@@ -225,7 +219,7 @@ export default function AdminPage() {
             <div className="flex items-end justify-between">
               <div>
                 <h2 className="text-xl font-bold">團購商品</h2>
-                <p className="mt-1 text-sm text-[var(--muted)]">商品與價格階梯都可以一直新增。</p>
+                <p className="mt-1 text-sm text-[var(--muted)]">不同口味、不同品項的數量會合併計算價格階梯。</p>
               </div>
               <button type="button" onClick={addProduct} className="rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white">＋ 新增商品</button>
             </div>
@@ -255,36 +249,6 @@ export default function AdminPage() {
                     <input value={product.description} onChange={(e) => updateProduct(productIndex, { description: e.target.value })} placeholder="例如：100g／包" className="mt-2 w-full rounded-xl border border-[var(--border)] px-4 py-3" />
                   </div>
                 </div>
-
-                <div className="mt-6 rounded-2xl bg-[#f7f8f5] p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <h4 className="font-semibold">價格階梯</h4>
-                      <p className="mt-1 text-xs text-[var(--muted)]">最後一階的最高數量留白，代表「以上」。</p>
-                    </div>
-                    <button type="button" onClick={() => addTier(productIndex)} className="rounded-xl border border-[var(--border)] bg-white px-3 py-2 text-sm font-medium">＋ 新增價格階梯</button>
-                  </div>
-
-                  <div className="mt-4 space-y-3">
-                    {product.tiers.map((tier, tierIndex) => (
-                      <div key={tierIndex} className="grid gap-3 md:grid-cols-[1fr_1fr_1fr_auto] md:items-end">
-                        <div>
-                          <label className="text-xs text-[var(--muted)]">最低數量</label>
-                          <input type="number" min="1" value={tier.minQuantity} onChange={(e) => updateTier(productIndex, tierIndex, { minQuantity: e.target.value })} className="mt-1 w-full rounded-xl border border-[var(--border)] bg-white px-3 py-2.5" />
-                        </div>
-                        <div>
-                          <label className="text-xs text-[var(--muted)]">最高數量</label>
-                          <input type="number" min="1" value={tier.maxQuantity} onChange={(e) => updateTier(productIndex, tierIndex, { maxQuantity: e.target.value })} placeholder="以上" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-white px-3 py-2.5" />
-                        </div>
-                        <div>
-                          <label className="text-xs text-[var(--muted)]">單價</label>
-                          <input type="number" min="0" step="0.01" value={tier.unitPrice} onChange={(e) => updateTier(productIndex, tierIndex, { unitPrice: e.target.value })} placeholder="例如 100" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-white px-3 py-2.5" />
-                        </div>
-                        <button type="button" onClick={() => removeTier(productIndex, tierIndex)} disabled={product.tiers.length === 1} className="rounded-xl border border-red-200 bg-white px-3 py-2.5 text-sm text-red-600 disabled:opacity-40">刪除</button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
               </div>
             ))}
           </section>
@@ -292,31 +256,61 @@ export default function AdminPage() {
           <section className="mt-6 rounded-3xl bg-white p-6 shadow-sm">
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
               <div>
+                <h2 className="text-xl font-bold">跨商品共用價格階梯</h2>
+                <p className="mt-2 text-sm text-[var(--muted)]">系統會把同一位團員選購的所有商品數量加總，再決定全部商品的單價。</p>
+              </div>
+              <button type="button" onClick={addTier} className="rounded-xl border border-[var(--border)] bg-white px-4 py-2 text-sm font-medium">＋ 新增價格階梯</button>
+            </div>
+
+            <div className="mt-5 rounded-2xl bg-[#f7f8f5] p-4">
+              <div className="grid gap-3 text-xs font-medium text-[var(--muted)] md:grid-cols-[1fr_1fr_1fr_auto]">
+                <div>最低數量</div>
+                <div>最高數量</div>
+                <div>混搭後單價</div>
+                <div />
+              </div>
+              <div className="mt-3 space-y-3">
+                {priceTiers.map((tier, tierIndex) => (
+                  <div key={tierIndex} className="grid gap-3 md:grid-cols-[1fr_1fr_1fr_auto] md:items-end">
+                    <input type="number" min="1" value={tier.minQuantity} onChange={(e) => updateTier(tierIndex, { minQuantity: e.target.value })} className="w-full rounded-xl border border-[var(--border)] bg-white px-3 py-2.5" />
+                    <input type="number" min="1" value={tier.maxQuantity} onChange={(e) => updateTier(tierIndex, { maxQuantity: e.target.value })} placeholder="以上" className="w-full rounded-xl border border-[var(--border)] bg-white px-3 py-2.5" />
+                    <input type="number" min="0" step="0.01" value={tier.unitPrice} onChange={(e) => updateTier(tierIndex, { unitPrice: e.target.value })} placeholder="例如 35" className="w-full rounded-xl border border-[var(--border)] bg-white px-3 py-2.5" />
+                    <button type="button" onClick={() => removeTier(tierIndex)} disabled={priceTiers.length === 1} className="rounded-xl border border-red-200 bg-white px-3 py-2.5 text-sm text-red-600 disabled:opacity-40">刪除</button>
+                  </div>
+                ))}
+              </div>
+              <p className="mt-4 text-xs text-[var(--muted)]">例如設定 1～9 件 35 元、10～29 件 34 元，3 原味＋2 胡椒＋5 椒麻＝10 件，全部適用 34 元。</p>
+            </div>
+          </section>
+
+          <section className="mt-6 rounded-3xl bg-white p-6 shadow-sm">
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+              <div>
                 {error && <p className="text-sm font-medium text-red-600">{error}</p>}
                 {message && <p className="text-sm font-medium text-[var(--accent)]">{message}</p>}
-                {!error && !message && <p className="text-sm text-[var(--muted)]">確認資料後建立團購。</p>}
+                {!error && !message && <p className="text-sm text-[var(--muted)]">確認商品與共用價格階梯後建立團購。</p>}
               </div>
-              <button disabled={submitting} className="rounded-xl bg-[var(--accent)] px-6 py-3 font-semibold text-white disabled:opacity-50">{submitting ? "建立中…" : "建立團購"}</button>
+              <button disabled={submitting} className="rounded-xl bg-[var(--accent)] px-6 py-3 font-semibold text-white disabled:opacity-50">{submitting ? "建立中..." : "建立團購"}</button>
             </div>
           </section>
         </form>
 
-        <section className="mt-8">
-          <h2 className="mb-4 text-xl font-bold">目前團購</h2>
-          <div className="space-y-3">
-            {groups.map((group) => (
-              <div key={group.id} className="rounded-2xl border border-[var(--border)] bg-white p-5">
-                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+        <section className="mt-8 rounded-3xl bg-white p-6 shadow-sm">
+          <h2 className="text-xl font-bold">目前團購</h2>
+          <div className="mt-4 overflow-hidden rounded-2xl border border-[var(--border)]">
+            {groups.length === 0 ? (
+              <div className="p-6 text-center text-sm text-[var(--muted)]">目前還沒有團購。</div>
+            ) : (
+              groups.map((group) => (
+                <div key={group.id} className="flex flex-col gap-3 border-b border-[var(--border)] p-4 last:border-0 md:flex-row md:items-center md:justify-between">
                   <div>
-                    <h3 className="font-semibold">{group.name}</h3>
-                    <p className="mt-1 text-sm text-[var(--muted)]">{formatDate(group.start_at)} ～ {formatDate(group.end_at)}</p>
+                    <div className="font-semibold">{group.name}</div>
+                    <div className="mt-1 text-sm text-[var(--muted)]">{formatDate(group.start_at)} ～ {formatDate(group.end_at)}</div>
                   </div>
-                  <span className="rounded-full bg-[#e8f3ef] px-3 py-1 text-xs font-semibold text-[var(--accent)]">{group.status}</span>
+                  <span className="rounded-full bg-[#e8f3ef] px-3 py-1 text-xs font-semibold text-[var(--accent)]">{group.status === "open" ? "訂購中" : group.status === "finalized" ? "已結算" : "已截止"}</span>
                 </div>
-                {group.description && <p className="mt-3 text-sm text-[var(--muted)]">{group.description}</p>}
-              </div>
-            ))}
-            {groups.length === 0 && <div className="rounded-2xl border border-dashed border-[var(--border)] p-8 text-center text-sm text-[var(--muted)]">目前還沒有團購。</div>}
+              ))
+            )}
           </div>
         </section>
       </div>
