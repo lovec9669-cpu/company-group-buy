@@ -28,8 +28,8 @@ export async function POST(request: Request) {
 
     const supabase = getSupabaseAdmin();
 
-    // 取得成員的 UUID 與 5 位數工號。orders 目前仍保留 employee_id 的 NOT NULL 約束，
-    // 因此建立訂單時兩個欄位都要寫入，避免 employee_id 被寫成 null。
+    // members.id 才是訂單與員工的正式關聯欄位。
+    // employee_id 是 5 位數文字工號，不應寫入 orders.employee_id（舊資料庫欄位可能是 UUID）。
     const { data: member, error: memberError } = await supabase
       .from("members")
       .select("id,employee_id,name")
@@ -96,12 +96,13 @@ export async function POST(request: Request) {
         .eq("order_id", orderId);
       if (deleteItemsError) throw deleteItemsError;
     } else {
+      // 只寫入 member_id。員工工號由 members.employee_id 保存，避免舊 orders.employee_id
+      // 的 UUID 欄位與 5 位數工號發生型別衝突。
       const { data: order, error: orderError } = await supabase
         .from("orders")
         .insert({
           group_buy_id: groupBuyId,
           member_id: memberId,
-          employee_id: member.employee_id,
         })
         .select("id")
         .single();
