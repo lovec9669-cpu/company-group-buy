@@ -8,34 +8,20 @@ type PriceGroupDraft = { id?: string; name: string; productIndexes: number[]; ti
 type GroupBuy = { id: string; name: string; description: string | null; start_at: string; end_at: string; status: "open" | "closed" | "reviewing" | "finalized" };
 type GroupDetail = GroupBuy & { products: ProductDraft[]; priceGroups: PriceGroupDraft[] };
 
-function formatDate(value: string) { return new Date(value).toLocaleString("zh-TW", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }); }
+function formatDate(value: string) { return new Date(value).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }); }
 function toLocalInput(value: string) { const date = new Date(value); const offset = date.getTimezoneOffset(); return new Date(date.getTime() - offset * 60000).toISOString().slice(0, 16); }
 function newTier(): TierDraft { return { minQuantity: "1", maxQuantity: "", unitPrice: "" }; }
 function newProduct(): ProductDraft { return { name: "", price: "", quantity: "", maxQuantity: "", description: "", unit: "個" }; }
 function newPriceGroup(index: number): PriceGroupDraft { return { name: `價格群組 ${index + 1}`, productIndexes: index === 0 ? [0] : [], tiers: [newTier()] }; }
 
 export default function AdminPage() {
-  const [loggedIn, setLoggedIn] = useState(false);
-  const [checkingSession, setCheckingSession] = useState(true);
-  const [password, setPassword] = useState("");
+  const [loggedIn, setLoggedIn] = useState(false); const [checkingSession, setCheckingSession] = useState(true); const [password, setPassword] = useState("");
   const [name, setName] = useState(""); const [description, setDescription] = useState(""); const [startAt, setStartAt] = useState(""); const [endAt, setEndAt] = useState("");
   const [products, setProducts] = useState<ProductDraft[]>([newProduct()]); const [priceGroups, setPriceGroups] = useState<PriceGroupDraft[]>([newPriceGroup(0)]); const [groups, setGroups] = useState<GroupBuy[]>([]);
   const [message, setMessage] = useState(""); const [error, setError] = useState(""); const [submitting, setSubmitting] = useState(false); const [editingId, setEditingId] = useState<string | null>(null); const [loadingEdit, setLoadingEdit] = useState(false);
 
   async function loadGroups() { const response = await fetch("/api/group-buys", { cache: "no-store" }); const result = await response.json(); if (response.ok) setGroups(result.data ?? []); }
-
-  useEffect(() => {
-    let active = true;
-    (async () => {
-      try {
-        const response = await fetch("/api/admin/session", { cache: "no-store" });
-        if (active && response.ok) setLoggedIn(true);
-      } finally { if (active) setCheckingSession(false); }
-    })();
-    loadGroups();
-    return () => { active = false; };
-  }, []);
-
+  useEffect(() => { let active = true; (async () => { try { const response = await fetch("/api/admin/session", { cache: "no-store" }); if (active && response.ok) setLoggedIn(true); } finally { if (active) setCheckingSession(false); } })(); loadGroups(); return () => { active = false; }; }, []);
   async function login(event: FormEvent) { event.preventDefault(); setMessage(""); setError(""); const response = await fetch("/api/admin/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }) }); if (!response.ok) { setError("管理員密碼錯誤"); return; } setLoggedIn(true); setPassword(""); }
   function resetForm() { setEditingId(null); setName(""); setDescription(""); setStartAt(""); setEndAt(""); setProducts([newProduct()]); setPriceGroups([newPriceGroup(0)]); setMessage(""); setError(""); }
   function updateProduct(index: number, patch: Partial<ProductDraft>) { setProducts((current) => current.map((p, i) => i === index ? { ...p, ...patch } : p)); }
@@ -49,7 +35,17 @@ export default function AdminPage() {
   function addTier(groupIndex: number) { setPriceGroups((current) => current.map((group, i) => { if (i !== groupIndex) return group; const previous = group.tiers[group.tiers.length - 1]; const nextMin = previous?.maxQuantity ? String(Number(previous.maxQuantity) + 1) : ""; return { ...group, tiers: [...group.tiers, { ...newTier(), minQuantity: nextMin }] }; })); }
   function removeTier(groupIndex: number, tierIndex: number) { setPriceGroups((current) => current.map((group, i) => i !== groupIndex ? group : { ...group, tiers: group.tiers.length === 1 ? group.tiers : group.tiers.filter((_, j) => j !== tierIndex) })); }
 
-  async function editGroup(id: string) { setError(""); setMessage(""); setLoadingEdit(true); try { const response = await fetch(`/api/group-buys/${id}`, { cache: "no-store" }); const result = await response.json(); if (!response.ok) throw new Error(result.error ?? "無法取得團購資料"); const data = result.data as GroupDetail; setEditingId(id); setName(data.name); setDescription(data.description ?? ""); setStartAt(toLocalInput(data.start_at)); setEndAt(toLocalInput(data.end_at)); setProducts(data.products.map((p) => ({ ...p, price: String(p.price ?? ""), quantity: String(p.quantity ?? ""), maxQuantity: p.maxQuantity == null ? "" : String(p.maxQuantity) }))); setPriceGroups(data.priceGroups.map((g) => ({ ...g, tiers: g.tiers.map((t) => ({ ...t, minQuantity: String(t.minQuantity), maxQuantity: String(t.maxQuantity ?? ""), unitPrice: String(t.unitPrice) })) }))); window.scrollTo({ top: 0, behavior: "smooth" }); } catch (e) { setError(e instanceof Error ? e.message : "無法取得團購資料"); } finally { setLoadingEdit(false); } }
+  async function editGroup(id: string) {
+    setError(""); setMessage(""); setLoadingEdit(true);
+    try {
+      const response = await fetch(`/api/group-buys/${id}`, { cache: "no-store" }); const result = await response.json(); if (!response.ok) throw new Error(result.error ?? "無法取得團購資料"); const data = result.data as GroupDetail;
+      if (data.status !== "open" || new Date(data.end_at).getTime() <= Date.now()) { throw new Error("團購已截止，無法修改。"); }
+      setEditingId(id); setName(data.name); setDescription(data.description ?? ""); setStartAt(toLocalInput(data.start_at)); setEndAt(toLocalInput(data.end_at));
+      setProducts(data.products.map((p) => ({ ...p, price: String(p.price ?? ""), quantity: String(p.quantity ?? ""), maxQuantity: p.maxQuantity == null ? "" : String(p.maxQuantity) })));
+      setPriceGroups(data.priceGroups.map((g) => ({ ...g, tiers: g.tiers.map((t) => ({ ...t, minQuantity: String(t.minQuantity), maxQuantity: String(t.maxQuantity ?? ""), unitPrice: String(t.unitPrice) })) })));
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (e) { setError(e instanceof Error ? e.message : "無法取得團購資料"); } finally { setLoadingEdit(false); }
+  }
   async function deleteGroup(group: GroupBuy) { if (!window.confirm(`確定要刪除「${group.name}」嗎？\n\n如果這個團購已經有員工下單，刪除可能會被資料庫阻止。`)) return; setError(""); setMessage(""); try { const response = await fetch(`/api/group-buys/${group.id}`, { method: "DELETE" }); const result = await response.json(); if (!response.ok) throw new Error(result.error ?? "刪除失敗"); if (editingId === group.id) resetForm(); setMessage(`「${group.name}」已刪除。`); await loadGroups(); } catch (e) { setError(e instanceof Error ? e.message : "刪除團購失敗"); } }
 
   async function submitGroup(event: FormEvent) {
@@ -60,6 +56,8 @@ export default function AdminPage() {
     const payloadProducts = products.map((p) => ({ ...p, price: p.price || "0", quantity: p.quantity || "0" })).filter((p) => p.name.trim()); const indexMap = new Map<number, number>(); products.forEach((p, originalIndex) => { if (p.name.trim()) indexMap.set(originalIndex, indexMap.size); }); const payloadGroups = remappedGroups.map((g) => ({ id: g.id, name: g.name, productIndexes: g.productIndexes.map((i) => indexMap.get(i) ?? -1).filter((i) => i >= 0), tiers: g.tiers }));
     setSubmitting(true); try { const url = editingId ? `/api/group-buys/${editingId}` : "/api/group-buys"; const method = editingId ? "PATCH" : "POST"; const response = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, description, startAt, endAt, products: payloadProducts, priceGroups: payloadGroups }) }); const result = await response.json(); if (!response.ok) { setError(result.error ?? (editingId ? "更新失敗" : "建立失敗")); return; } setMessage(editingId ? "團購已更新。" : "團購建立成功。價格階梯會依各價格群組中「全體員工」的訂購總數量計算。"); resetForm(); await loadGroups(); } catch { setError("無法連線到伺服器，請稍後再試"); } finally { setSubmitting(false); }
   }
+
+  const editableGroups = groups.filter((group) => group.status === "open" && new Date(group.end_at).getTime() > Date.now());
 
   if (checkingSession) return <main className="min-h-screen px-5 py-10"><div className="mx-auto max-w-md rounded-3xl bg-white p-7 text-center shadow-sm text-sm text-[var(--muted)]">正在驗證管理員權限...</div></main>;
   if (!loggedIn) return <main className="min-h-screen px-5 py-10"><div className="mx-auto max-w-md rounded-3xl bg-white p-7 shadow-sm"><p className="text-sm font-medium text-[var(--accent)]">Company Group Buy</p><h1 className="mt-2 text-2xl font-bold">管理員後台</h1><p className="mt-2 text-sm text-[var(--muted)]">請輸入管理員密碼進入後台。</p><form onSubmit={login} className="mt-6"><label className="text-sm font-medium">管理員密碼</label><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="mt-2 w-full rounded-xl border border-[var(--border)] px-4 py-3" required /><button className="mt-4 w-full rounded-xl bg-[var(--accent)] px-4 py-3 font-semibold text-white">登入</button></form>{error && <p className="mt-4 text-sm text-red-600">{error}</p>}</div></main>;
@@ -74,6 +72,6 @@ export default function AdminPage() {
 
     <section className="mt-6 rounded-3xl bg-white p-6 shadow-sm"><div className="flex items-center justify-between gap-4"><div>{error && <p className="text-sm font-medium text-red-600">{error}</p>}{message && <p className="text-sm font-medium text-[var(--accent)]">{message}</p>}</div><button type="submit" disabled={submitting || loadingEdit} className="rounded-xl bg-[var(--accent)] px-6 py-3 font-semibold text-white disabled:opacity-50">{submitting ? (editingId ? "更新中..." : "建立中...") : editingId ? "儲存修改" : "建立團購"}</button></div></section></form>
 
-    <section className="mt-10"><div className="flex items-end justify-between"><div><h2 className="text-xl font-bold">目前團購</h2><p className="mt-1 text-sm text-[var(--muted)]">每個團購都可以編輯或刪除。</p></div></div><div className="mt-4 overflow-hidden rounded-3xl border border-[var(--border)] bg-white">{groups.length === 0 ? <div className="p-8 text-center text-sm text-[var(--muted)]">目前還沒有團購。</div> : groups.map((group) => <div key={group.id} className="flex flex-col gap-4 border-b border-[var(--border)] p-5 last:border-0 md:flex-row md:items-center md:justify-between"><div><div className="font-semibold">{group.name}</div><div className="mt-1 text-sm text-[var(--muted)]">{formatDate(group.start_at)} ～ {formatDate(group.end_at)}</div><span className="mt-2 inline-flex rounded-full bg-gray-100 px-3 py-1 text-xs text-[var(--muted)]">{group.status}</span></div><div className="flex gap-2"><button type="button" onClick={() => editGroup(group.id)} disabled={loadingEdit} className="rounded-xl border border-[var(--border)] px-4 py-2 text-sm font-medium">{loadingEdit ? "讀取中..." : "編輯"}</button><button type="button" onClick={() => deleteGroup(group)} className="rounded-xl border border-red-200 px-4 py-2 text-sm font-medium text-red-600">刪除</button></div></div>)}</div></section>
+    <section className="mt-10"><div className="flex items-end justify-between"><div><h2 className="text-xl font-bold">目前可編輯團購</h2><p className="mt-1 text-sm text-[var(--muted)]">團購截止後會自動從這裡移除，請到「歷史團購」處理後續確認與計算。</p></div></div><div className="mt-4 overflow-hidden rounded-3xl border border-[var(--border)] bg-white">{editableGroups.length === 0 ? <div className="p-8 text-center text-sm text-[var(--muted)]">目前沒有可編輯的進行中團購。</div> : editableGroups.map((group) => <div key={group.id} className="flex flex-col gap-4 border-b border-[var(--border)] p-5 last:border-0 md:flex-row md:items-center md:justify-between"><div><div className="font-semibold">{group.name}</div><div className="mt-1 text-sm text-[var(--muted)]">{formatDate(group.start_at)} ～ {formatDate(group.end_at)}</div><span className="mt-2 inline-flex rounded-full bg-gray-100 px-3 py-1 text-xs text-[var(--muted)]">進行中</span></div><div className="flex gap-2"><button type="button" onClick={() => editGroup(group.id)} disabled={loadingEdit} className="rounded-xl border border-[var(--border)] px-4 py-2 text-sm font-medium">{loadingEdit ? "讀取中..." : "編輯"}</button><button type="button" onClick={() => deleteGroup(group)} className="rounded-xl border border-red-200 px-4 py-2 text-sm font-medium text-red-600">刪除</button></div></div>)}</div></section>
   </div></main>;
 }
