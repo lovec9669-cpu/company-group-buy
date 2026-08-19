@@ -3,13 +3,7 @@ import { getSupabaseAdmin } from "@/lib/supabase-admin";
 
 async function closeIfExpired(id: string, status: string, endAt: string) {
   if (status === "open" && new Date(endAt).getTime() <= Date.now()) {
-    const { data, error } = await getSupabaseAdmin()
-      .from("group_buys")
-      .update({ status: "closed" })
-      .eq("id", id)
-      .eq("status", "open")
-      .select("status")
-      .single();
+    const { data, error } = await getSupabaseAdmin().from("group_buys").update({ status: "closed" }).eq("id", id).eq("status", "open").select("status").single();
     if (!error && data) return data.status;
     return "closed";
   }
@@ -20,61 +14,25 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   try {
     const { id } = await context.params;
     const supabase = getSupabaseAdmin();
-    const { data: group, error: groupError } = await supabase
-      .from("group_buys")
-      .select("id,name,description,start_at,end_at,status,created_at")
-      .eq("id", id)
-      .single();
+    const { data: group, error: groupError } = await supabase.from("group_buys").select("id,name,description,start_at,end_at,status,created_at").eq("id", id).single();
     if (groupError || !group) return NextResponse.json({ error: "找不到這個團購" }, { status: 404 });
-
     const status = await closeIfExpired(id, group.status, group.end_at);
-    const { data: products, error: productError } = await supabase
-      .from("products")
-      .select("id,name")
-      .eq("group_buy_id", id)
-      .order("sort_order", { ascending: true });
+    const { data: products, error: productError } = await supabase.from("products").select("id,name,description,unit,price,quantity,max_quantity,sort_order,price_group_id").eq("group_buy_id", id).order("sort_order", { ascending: true });
     if (productError) throw productError;
-
+    const { data: groups } = await supabase.from("group_buy_price_groups").select("id,name,sort_order").eq("group_buy_id", id).order("sort_order", { ascending: true });
+    const { data: tiers } = await supabase.from("group_buy_price_tiers").select("id,price_group_id,min_quantity,max_quantity,unit_price").eq("group_buy_id", id).order("min_quantity", { ascending: true });
+    const productIds = (products ?? []).map((p) => p.id);
+    const { data: orders } = productIds.length ? await supabase.from("orders").select("id").eq("group_buy_id", id) : { data: [] };
+    const orderIds = (orders ?? []).map((o) => o.id);
+    const { data: items } = orderIds.length ? await supabase.from("order_items").select("product_id,quantity").in("order_id", orderIds) : { data: [] };
+    const totalByProduct = new Map<string, number>();
+    for (const item of items ?? []) totalByProduct.set(item.product_id, (totalByProduct.get(item.product_id) ?? 0) + Number(item.quantity ?? 0));
+    const productData = (products ?? []).map((p) => ({ ...p, orderedQuantity: totalByProduct.get(p.id) ?? 0 }));
     let totalAmount = 0;
-    const productTotals = new Map<string, { productId: string; productName: string; quantity: number; amount: number }>();
-
     if (status === "finalized") {
-      const { data: orders, error: orderError } = await supabase
-        .from("orders")
-        .select("id")
-        .eq("group_buy_id", id);
-      if (orderError) throw orderError;
-      const orderIds = (orders ?? []).map((order) => order.id);
-      if (orderIds.length) {
-        const { data: items, error: itemError } = await supabase
-          .from("order_items")
-          .select("product_id,quantity,final_quantity,final_unit_price,final_amount")
-          .in("order_id", orderIds);
-        if (itemError) throw itemError;
-        const productMap = new Map((products ?? []).map((p) => [p.id, p.name]));
-        for (const item of items ?? []) {
-          const quantity = Number(item.final_quantity ?? item.quantity ?? 0);
-          const amount = item.final_amount == null ? quantity * Number(item.final_unit_price ?? 0) : Number(item.final_amount);
-          const productId = String(item.product_id);
-          const current = productTotals.get(productId) ?? { productId, productName: productMap.get(productId) ?? "未知商品", quantity: 0, amount: 0 };
-          current.quantity += quantity;
-          current.amount += amount;
-          productTotals.set(productId, current);
-          totalAmount += amount;
-        }
-      }
+      const { data: finalItems } = orderIds.length ? await supabase.from("order_items").select("product_id,quantity,final_quantity,final_unit_price,final_amount").in("order_id", orderIds) : { data: [] };
+      for (const item of finalItems ?? []) totalAmount += item.final_amount == null ? Number(item.final_quantity ?? item.quantity ?? 0) * Number(item.final_unit_price ?? 0) : Number(item.final_amount);
     }
-
-    return NextResponse.json({
-      data: {
-        ...group,
-        status,
-        products: Array.from(productTotals.values()),
-        totalAmount: status === "finalized" ? totalAmount : null,
-      },
-    });
-  } catch (error) {
-    console.error("GET /api/group-buys/[id]/public", error);
-    return NextResponse.json({ error: error instanceof Error ? error.message : "無法取得團購狀態" }, { status: 500 });
-  }
+    return NextResponse.json({ data: { ...group, status, products: productData, priceGroups: groups ?? [], priceTiers: tiers ?? [], totalAmount: status === "finalized" ? totalAmount : null } });
+  } catch (error) { console.error("GET /api/group-buys/[id]/public", error); return NextResponse.json({ error: error instanceof Error ? error.message : "無法取得團購資料" }, { status: 500 }); }
 }
