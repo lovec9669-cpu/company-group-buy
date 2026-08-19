@@ -20,6 +20,12 @@ type PriceGroupInput = {
   tiers?: unknown;
 };
 
+function parseTaipeiDateTime(value: string) {
+  const normalized = value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(normalized)) return new Date(NaN);
+  return new Date(`${normalized}:00+08:00`);
+}
+
 function validateTiers(tiers: PriceTierInput[]) {
   const normalized = tiers.map((tier) => {
     const min = Number(tier.minQuantity);
@@ -73,7 +79,7 @@ export async function POST(request: Request) {
     const priceGroups = Array.isArray(body.priceGroups) ? (body.priceGroups as PriceGroupInput[]) : [];
 
     if (!name || !startAt || !endAt) return NextResponse.json({ error: "請填寫團購名稱、開始時間與結束時間" }, { status: 400 });
-    const start = new Date(startAt), end = new Date(endAt);
+    const start = parseTaipeiDateTime(startAt), end = parseTaipeiDateTime(endAt);
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return NextResponse.json({ error: "開始或結束時間格式不正確" }, { status: 400 });
     if (end <= start) return NextResponse.json({ error: "結束時間必須晚於開始時間" }, { status: 400 });
     if (products.length === 0) return NextResponse.json({ error: "至少需要一個商品" }, { status: 400 });
