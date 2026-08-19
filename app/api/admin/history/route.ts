@@ -3,7 +3,7 @@ import { cookies } from "next/headers";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
 import { adminCookieName, isValidAdminToken } from "@/lib/admin-auth";
 
-export async function GET() {
+export async function GET(request: Request) {
   const cookieStore = await cookies();
   if (!isValidAdminToken(cookieStore.get(adminCookieName)?.value)) return NextResponse.json({ error: "需要管理員權限" }, { status: 401 });
 
@@ -17,10 +17,14 @@ export async function GET() {
       if (closeError) throw closeError;
     }
 
+    const url = new URL(request.url);
+    const requestedStatus = url.searchParams.get("status");
+    const statusFilter = requestedStatus === "closed" ? ["closed"] : ["reviewing", "finalized"];
+
     const { data: groups, error: groupError } = await supabase
       .from("group_buys")
       .select("id,name,description,start_at,end_at,status,created_at")
-      .neq("status", "open")
+      .in("status", statusFilter)
       .order("end_at", { ascending: false });
     if (groupError) throw groupError;
 
@@ -50,6 +54,6 @@ export async function GET() {
     return NextResponse.json({ data: result });
   } catch (error) {
     console.error("GET /api/admin/history", error);
-    return NextResponse.json({ error: error instanceof Error ? error.message : "無法取得歷史團購資料" }, { status: 500 });
+    return NextResponse.json({ error: error instanceof Error ? error.message : "無法取得團購資料" }, { status: 500 });
   }
 }
