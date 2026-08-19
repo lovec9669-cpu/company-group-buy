@@ -18,12 +18,15 @@ export async function POST(request: Request) {
     const supabase = getSupabaseAdmin();
     const { data: existing, error: findError } = await supabase
       .from("members")
-      .select("id,employee_id,name")
+      .select("id,employee_id,name,deleted_at")
       .eq("employee_id", employeeId)
       .maybeSingle();
     if (findError) throw findError;
 
     if (existing) {
+      if (existing.deleted_at) {
+        return NextResponse.json({ error: `工號 ${employeeId} 的成員資料目前已被管理員刪除，請聯絡管理員恢復後再登入。` }, { status: 403 });
+      }
       if (existing.name !== name) {
         return NextResponse.json({ error: `工號 ${employeeId} 已經有成員資料，請確認姓名是否正確。` }, { status: 409 });
       }
