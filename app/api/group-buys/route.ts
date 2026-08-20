@@ -44,7 +44,7 @@ function validateTiers(tiers: PriceTierInput[]) {
   return normalized;
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const supabase = getSupabaseAdmin();
     const { data, error } = await supabase.from("group_buys").select("id,name,description,start_at,end_at,status,created_at").order("start_at", { ascending: false });
@@ -57,9 +57,20 @@ export async function GET() {
       if (closeError) throw closeError;
     }
 
-    // 團員端只顯示已經到開始時間的團購。尚未開始的團購會等到 start_at 到達後才出現在可參加清單。
+    // 管理員後台需要看到尚未開始的團購，才能提前編輯；一般團員端只顯示已經到開始時間的團購。
+    let isAdminRequest = false;
+    const cookieStore = await cookies();
+    if (isValidAdminToken(cookieStore.get(adminCookieName)?.value)) {
+      const referer = request.headers.get("referer") ?? "";
+      try {
+        isAdminRequest = new URL(referer).pathname.startsWith("/admin");
+      } catch {
+        isAdminRequest = false;
+      }
+    }
+
     const normalized = (data ?? [])
-      .filter((group) => new Date(group.start_at).getTime() <= now)
+      .filter((group) => isAdminRequest || new Date(group.start_at).getTime() <= now)
       .map((group) => openExpired.includes(group.id) ? { ...group, status: "closed" } : group);
     return NextResponse.json({ data: normalized });
   } catch (error) {
