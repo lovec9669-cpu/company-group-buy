@@ -8,7 +8,9 @@ type Product = { id: string; name: string; description: string | null; unit: str
 type PriceGroup = { id: string; name: string; sort_order: number };
 type PriceTier = { id: string; price_group_id: string; min_quantity: number; max_quantity: number | null; unit_price: number };
 type GroupDetail = GroupBuy & { products: Product[]; priceGroups: PriceGroup[]; priceTiers: PriceTier[]; totalAmount: number | null };
-type MyOrder = { id: string; group_buy_id: string; created_at: string; group?: GroupBuy; items: { productId: string; productName: string; unit: string; quantity: number; finalAmount: number | null }[]; isFinalized: boolean };
+type HistoryItem = { productId: string; productName: string; unit: string; quantity: number; finalAmount: number };
+type HistorySummary = { participantCount: number; totalAmount: number; items: HistoryItem[] };
+type MyOrder = { id: string; group_buy_id: string; created_at: string; group?: GroupBuy; items: { productId: string; productName: string; unit: string; quantity: number; finalAmount: number | null }[]; isFinalized: boolean; history: HistorySummary | null };
 type Step = "products" | "confirm";
 type Menu = "current" | "closed" | "history" | "myHistory";
 
@@ -300,7 +302,7 @@ export default function Home() {
       </>}
 
       {activeMenu === "closed" && <section><div className="mb-4"><h3 className="text-xl font-bold">截止的訂單</h3><p className="mt-1 text-sm text-[var(--muted)]">團購截止後會保留在這裡，等待管理員完成計算。</p></div>{closedOrders.length ? <div className="space-y-3">{closedOrders.map((order) => <OrderCard key={order.id} order={order} />)}</div> : <Empty text="目前沒有截止的訂單。" />}</section>}
-      {activeMenu === "history" && <section><div className="mb-4"><h3 className="text-xl font-bold">歷史訂單</h3><p className="mt-1 text-sm text-[var(--muted)]">管理員發布計算完成後，訂單會移到這裡並顯示最終金額。</p></div>{historyOrders.length ? <div className="space-y-4">{historyOrders.map((order) => <HistoryOrderCard key={order.id} order={order} />)}</div> : <Empty text="目前還沒有歷史訂單。" />}</section>}
+      {activeMenu === "history" && <section><div className="mb-4"><h3 className="text-xl font-bold">歷史訂單</h3><p className="mt-1 text-sm text-[var(--muted)]">每筆完成的團購都會顯示全體團員的最終合計。</p></div>{historyOrders.length ? <div className="space-y-4">{historyOrders.map((order) => <HistoryOrderCard key={order.id} order={order} />)}</div> : <Empty text="目前還沒有歷史訂單。" />}</section>}
       {activeMenu === "myHistory" && <section><div className="mb-4"><h3 className="text-xl font-bold">我的歷史訂單</h3><p className="mt-1 text-sm text-[var(--muted)]">只顯示你本人曾經參加過、且管理員已發布計算完成的團購。</p></div>{myHistoryOrders.length ? <div className="space-y-4">{myHistoryOrders.map((order) => <HistoryOrderCard key={order.id} order={order} />)}</div> : <Empty text="你目前還沒有參加過已完成計算的團購。" />}</section>}
     </div></section>
 
@@ -384,8 +386,44 @@ function OrderCard({ order, onEdit }: { order: MyOrder; onEdit?: () => void }) {
 }
 
 function HistoryOrderCard({ order }: { order: MyOrder }) {
-  const total = order.items.reduce((sum, item) => sum + (item.finalAmount ?? 0), 0);
-  return <article className="rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-center justify-between gap-3"><div><h4 className="font-bold">{order.group?.name ?? "團購"}</h4><p className="mt-1 text-sm text-[var(--muted)]">下單時間：{formatDate(order.created_at)}</p></div><StatusBadge status="finalized" /></div><div className="mt-4 divide-y rounded-2xl border border-[var(--border)]">{order.items.map((item) => <div key={item.productId} className="flex items-center justify-between px-4 py-3 text-sm"><span>{item.productName} × {item.quantity} {item.unit}</span><span className="font-semibold">{item.finalAmount == null ? "待計算" : `$ ${formatMoney(item.finalAmount)}`}</span></div>)}</div><div className="mt-4 flex items-center justify-between rounded-2xl bg-[#f4f5f1] px-4 py-4"><span className="font-semibold">最終訂單金額</span><span className="text-xl font-bold text-[var(--accent)]">$ {formatMoney(total)}</span></div></article>;
+  const [expanded, setExpanded] = useState(false);
+  const history = order.history;
+  const totalAmount = history?.totalAmount ?? 0;
+  const participantCount = history?.participantCount ?? 0;
+  const items = history?.items ?? [];
+
+  return <article className="overflow-hidden rounded-3xl bg-white shadow-sm">
+    <button onClick={() => setExpanded((current) => !current)} className="flex w-full items-center justify-between gap-4 px-5 py-5 text-left hover:bg-[#fafbf9]">
+      <div className="min-w-0">
+        <h4 className="font-bold">{order.group?.name ?? "團購"}</h4>
+        <p className="mt-1 text-sm text-[var(--muted)]">總人數 {participantCount} 人</p>
+      </div>
+      <div className="flex shrink-0 items-center gap-4 text-sm">
+        <span className="font-bold text-[var(--accent)]">$ {formatMoney(totalAmount)}</span>
+        <span className="text-[var(--muted)]">{expanded ? "收起" : "查看明細"}</span>
+      </div>
+    </button>
+
+    {expanded && <div className="border-t border-[var(--border)] px-5 pb-5 pt-4">
+      <div className="overflow-hidden rounded-2xl border border-[var(--border)]">
+        <div className="grid grid-cols-[minmax(0,1fr)_120px_140px] gap-4 bg-[#f4f5f1] px-4 py-3 text-sm font-semibold">
+          <span>品項</span>
+          <span className="text-right">商品總數量</span>
+          <span className="text-right">商品總金額</span>
+        </div>
+        {items.length ? items.map((item) => <div key={item.productId} className="grid grid-cols-[minmax(0,1fr)_120px_140px] gap-4 border-t border-[var(--border)] px-4 py-3 text-sm">
+          <span>{item.productName}</span>
+          <span className="text-right font-semibold">{item.quantity} {item.unit}</span>
+          <span className="text-right font-semibold">$ {formatMoney(item.finalAmount)}</span>
+        </div>) : <div className="px-4 py-5 text-sm text-[var(--muted)]">目前沒有商品明細。</div>}
+      </div>
+      <div className="mt-4 flex items-center justify-between rounded-2xl bg-[#f4f5f1] px-4 py-4">
+        <span className="font-semibold">此訂單總金額</span>
+        <span className="text-xl font-bold text-[var(--accent)]">$ {formatMoney(totalAmount)}</span>
+      </div>
+      <div className="mt-4 flex justify-end"><button onClick={() => setExpanded(false)} className="rounded-xl border border-[var(--border)] px-4 py-2.5 text-sm">收起</button></div>
+    </div>}
+  </article>;
 }
 
 function Empty({ text }: { text: string }) { return <div className="rounded-3xl border border-dashed border-[var(--border)] bg-white p-8 text-center text-sm text-[var(--muted)]">{text}</div>; }
