@@ -133,14 +133,6 @@ export async function GET(request: Request) {
 
     const supabase = getSupabaseAdmin();
 
-    const { data: member, error: memberError } = await supabase
-      .from("members")
-      .select("id")
-      .eq("employee_id", employeeId)
-      .is("deleted_at", null)
-      .single();
-    if (memberError || !member) return NextResponse.json({ data: [] });
-
     // 先依照後台相同規則同步團購狀態。
     const { data: openGroups, error: openGroupsError } = await supabase
       .from("group_buys")
@@ -160,6 +152,14 @@ export async function GET(request: Request) {
         .eq("status", "open");
       if (closeError) throw closeError;
     }
+
+    const { data: member, error: memberError } = await supabase
+      .from("members")
+      .select("id")
+      .eq("employee_id", employeeId)
+      .is("deleted_at", null)
+      .single();
+    if (memberError || !member) return NextResponse.json({ data: [] });
 
     // 取得這位員工自己的訂單。
     const { data: orders, error: orderError } = await supabase
@@ -198,7 +198,6 @@ export async function GET(request: Request) {
         : { data: [] };
       const productMap = new Map((products ?? []).map((p) => [p.id, p]));
 
-      // 歷史團購的最終價格由後台依「全體員工在同一價格群組的總數量」計算。
       const priceGroupIds = [...new Set((products ?? []).map((p) => p.price_group_id).filter((id): id is string => Boolean(id)))];
       let tiers: { price_group_id: string; min_quantity: number; max_quantity: number | null; unit_price: number | string }[] = [];
       if (priceGroupIds.length) {
@@ -210,8 +209,11 @@ export async function GET(request: Request) {
         tiers = tierRows ?? [];
       }
 
+      // 團購截止後，包含「已完成待收款」階段，都直接依全體團員的數量計算本次單價。
+      // 這樣會員端在管理員發布結果後就能立即看到自己的應付金額，不再顯示「待計算」。
       const groupQuantities = new Map<string, number>();
-      if (group?.status === "finalized") {
+      const shouldCalculateFinalAmount = Boolean(group && ["closed", "reviewing", "awaiting_payment", "finalized"].includes(group.status));
+      if (shouldCalculateFinalAmount && group) {
         const { data: allOrders, error: allOrdersError } = await supabase
           .from("orders")
           .select("id")
@@ -250,7 +252,7 @@ export async function GET(request: Request) {
         const calculatedUnitPrice = product
           ? getTierPrice(product, groupQuantities.get(product.price_group_id ?? "") ?? 0, tiers)
           : 0;
-        const finalAmount = item.final_amount == null && group?.status === "finalized"
+        const finalAmount = item.final_amount == null && shouldCalculateFinalAmount
           ? quantity * (item.final_unit_price == null ? calculatedUnitPrice : Number(item.final_unit_price))
           : item.final_amount == null
             ? null
