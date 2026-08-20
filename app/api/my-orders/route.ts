@@ -1,6 +1,27 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
 
+function getTierPrice(
+  product: { price: number | string | null; price_group_id: string | null },
+  groupQuantity: number,
+  tiers: { price_group_id: string; min_quantity: number; max_quantity: number | null; unit_price: number | string }[],
+) {
+  const basePrice = Number(product.price ?? 0);
+  if (!product.price_group_id || groupQuantity <= 0) return basePrice;
+
+  const groupTiers = tiers
+    .filter((tier) => tier.price_group_id === product.price_group_id)
+    .sort((a, b) => Number(a.min_quantity) - Number(b.min_quantity));
+
+  const tier = groupTiers.find(
+    (item) =>
+      groupQuantity >= Number(item.min_quantity) &&
+      (item.max_quantity == null || groupQuantity <= Number(item.max_quantity)),
+  );
+
+  return tier ? Number(tier.unit_price) : basePrice;
+}
+
 export async function GET(request: Request) {
   try {
     const employeeId = new URL(request.url).searchParams.get("employeeId")?.trim() ?? "";
@@ -68,17 +89,78 @@ export async function GET(request: Request) {
 
       const productIds = (items ?? []).map((item) => item.product_id);
       const { data: products } = productIds.length
-        ? await supabase.from("products").select("id,name,unit").in("id", productIds)
+        ? await supabase.from("products").select("id,name,unit,price,price_group_id").in("id", productIds)
         : { data: [] };
       const productMap = new Map((products ?? []).map((p) => [p.id, p]));
 
-      const orderItems = (items ?? []).map((item) => ({
-        productId: item.product_id,
-        productName: productMap.get(item.product_id)?.name ?? "商品",
-        unit: productMap.get(item.product_id)?.unit ?? "",
-        quantity: Number(item.final_quantity ?? item.quantity ?? 0),
-        finalAmount: item.final_amount == null ? null : Number(item.final_amount),
-      }));
+      // 歷史團購的最終價格由後台依「全體員工在同一價格群組的總數量」計算。
+      // 新流程會把結果寫入 order_items；這裡保留相同的後端計算作為既有資料的回填，
+      // 因此過去已發布但尚未寫入 final_amount 的訂單也能正確顯示金額。
+      const priceGroupIds = [...new Set((products ?? []).map((p) => p.price_group_id).filter((id): id is string => Boolean(id)))];
+      let tiers: { price_group_id: string; min_quantity: number; max_quantity: number | null; unit_price: number | string }[] = [];
+      if (priceGroupIds.length) {
+        const { data: tierRows, error: tierError } = await supabase
+          .from("group_buy_price_tiers")
+          .select("price_group_id,min_quantity,max_quantity,unit_price")
+          .in("price_group_id", priceGroupIds);
+        if (tierError) throw tierError;
+        tiers = tierRows ?? [];
+      }
+
+      const groupQuantities = new Map<string, number>();
+      if (group?.status === "finalized") {
+        const { data: allOrders, error: allOrdersError } = await supabase
+          .from("orders")
+          .select("id")
+          .eq("group_buy_id", group.id);
+        if (allOrdersError) throw allOrdersError;
+
+        const allOrderIds = (allOrders ?? []).map((item) => item.id);
+        if (allOrderIds.length) {
+          const { data: allItems, error: allItemsError } = await supabase
+            .from("order_items")
+            .select("product_id,quantity")
+            .in("order_id", allOrderIds);
+          if (allItemsError) throw allItemsError;
+
+          const allProductIds = [...new Set((allItems ?? []).map((item) => item.product_id))];
+          const { data: allProducts, error: allProductsError } = allProductIds.length
+            ? await supabase.from("products").select("id,price_group_id").in("id", allProductIds)
+            : { data: [], error: null };
+          if (allProductsError) throw allProductsError;
+
+          const allProductMap = new Map((allProducts ?? []).map((p) => [p.id, p]));
+          for (const item of allItems ?? []) {
+            const product = allProductMap.get(item.product_id);
+            if (!product?.price_group_id) continue;
+            groupQuantities.set(
+              product.price_group_id,
+              (groupQuantities.get(product.price_group_id) ?? 0) + Number(item.quantity ?? 0),
+            );
+          }
+        }
+      }
+
+      const orderItems = (items ?? []).map((item) => {
+        const product = productMap.get(item.product_id);
+        const quantity = Number(item.final_quantity ?? item.quantity ?? 0);
+        const calculatedUnitPrice = product
+          ? getTierPrice(product, groupQuantities.get(product.price_group_id ?? "") ?? 0, tiers)
+          : 0;
+        const finalAmount = item.final_amount == null && group?.status === "finalized"
+          ? quantity * (item.final_unit_price == null ? calculatedUnitPrice : Number(item.final_unit_price))
+          : item.final_amount == null
+            ? null
+            : Number(item.final_amount);
+
+        return {
+          productId: item.product_id,
+          productName: product?.name ?? "商品",
+          unit: product?.unit ?? "",
+          quantity,
+          finalAmount,
+        };
+      });
 
       result.push({
         ...order,
