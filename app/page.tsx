@@ -318,24 +318,40 @@ function OrderCard({ order, onEdit }: { order: MyOrder; onEdit?: () => void }) {
   const [groupDetail, setGroupDetail] = useState<GroupDetail | null>(null);
   const [loadingAmount, setLoadingAmount] = useState(false);
   const canEdit = order.group?.status === "open" && new Date(order.group.end_at).getTime() > Date.now() && !!onEdit;
+  const needsFinalAmount = order.group?.status === "closed" || order.group?.status === "reviewing";
+
+  async function loadGroupDetail() {
+    if (groupDetail || !order.group_buy_id) return;
+    setLoadingAmount(true);
+    try {
+      const response = await fetch(`/api/group-buys/${order.group_buy_id}/public`, { cache: "no-store" });
+      const result = await response.json();
+      if (response.ok) setGroupDetail(result.data ?? null);
+    } finally {
+      setLoadingAmount(false);
+    }
+  }
+
+  useEffect(() => {
+    if (needsFinalAmount) loadGroupDetail();
+  }, [needsFinalAmount, order.group_buy_id]);
 
   async function toggleExpanded() {
     const nextExpanded = !expanded;
     setExpanded(nextExpanded);
-    if (nextExpanded && !groupDetail && order.group_buy_id) {
-      setLoadingAmount(true);
-      try {
-        const response = await fetch(`/api/group-buys/${order.group_buy_id}/public`, { cache: "no-store" });
-        const result = await response.json();
-        if (response.ok) setGroupDetail(result.data ?? null);
-      } finally {
-        setLoadingAmount(false);
-      }
-    }
+    if (nextExpanded) await loadGroupDetail();
   }
 
   const estimatedTotal = useMemo(() => {
-    if (!groupDetail || !order.items.length) return null;
+    if (!order.items.length) return null;
+
+    // 後台進入「已完成待收款」後，API 已把每個團員的最終應付金額寫進 finalAmount。
+    // 直接使用這個結果，首頁不需要再等使用者展開明細或重新計算。
+    if (order.items.every((item) => item.finalAmount != null)) {
+      return order.items.reduce((sum, item) => sum + Number(item.finalAmount ?? 0), 0);
+    }
+
+    if (!groupDetail) return null;
     if (groupDetail.status === "finalized") {
       const finalized = order.items.reduce((sum, item) => sum + (item.finalAmount ?? 0), 0);
       return order.items.some((item) => item.finalAmount != null) ? finalized : null;
@@ -356,7 +372,7 @@ function OrderCard({ order, onEdit }: { order: MyOrder; onEdit?: () => void }) {
   const isFinalized = order.group?.status === "finalized" || order.isFinalized;
 
   function getItemUnitPrice(item: MyOrder["items"][number]) {
-    if (isFinalized && item.finalAmount != null && item.quantity > 0) return item.finalAmount / item.quantity;
+    if (item.finalAmount != null && item.quantity > 0 && (isFinalized || needsFinalAmount)) return item.finalAmount / item.quantity;
     if (!groupDetail) return null;
     const product = groupDetail.products.find((p) => p.id === item.productId);
     if (!product) return null;
@@ -364,11 +380,22 @@ function OrderCard({ order, onEdit }: { order: MyOrder; onEdit?: () => void }) {
     return getTierPrice(groupDetail, product, aggregateQuantity);
   }
 
+  const amountText = isFinalized || estimatedTotal != null
+    ? `總金額 $ ${formatMoney(isFinalized ? displayedTotal : estimatedTotal ?? 0)}`
+    : loadingAmount
+      ? "總金額計算中..."
+      : "總金額 待計算";
+  const expandedAmountText = isFinalized || estimatedTotal != null
+    ? `$ ${formatMoney(isFinalized ? displayedTotal : estimatedTotal ?? 0)}`
+    : loadingAmount
+      ? "計算中..."
+      : "待計算";
+
   return <article className="rounded-3xl bg-white shadow-sm overflow-hidden">
     <button onClick={toggleExpanded} className="flex w-full items-center justify-between gap-4 px-5 py-5 text-left hover:bg-[#fafbf9]">
       <span className="font-bold">{order.group?.name ?? "團購"}</span>
       <span className="flex items-center gap-4 text-sm">
-        <span className="font-semibold text-[var(--accent)]">{isFinalized ? `總金額 $ ${formatMoney(displayedTotal)}` : loadingAmount ? "總金額計算中..." : estimatedTotal != null ? `總金額 $ ${formatMoney(estimatedTotal)}` : "總金額 待計算"}</span>
+        <span className="font-semibold text-[var(--accent)]">{amountText}</span>
         <span className="text-[var(--muted)]">{expanded ? "收起" : "查看明細"}</span>
       </span>
     </button>
@@ -378,7 +405,7 @@ function OrderCard({ order, onEdit }: { order: MyOrder; onEdit?: () => void }) {
       </div>
       <div className="mt-4 flex items-center justify-between rounded-2xl bg-[#f4f5f1] px-4 py-4">
         <span className="font-semibold">總金額</span>
-        <span className="text-xl font-bold text-[var(--accent)]">{isFinalized ? `$ ${formatMoney(displayedTotal)}` : estimatedTotal != null ? `$ ${formatMoney(estimatedTotal)}` : loadingAmount ? "計算中..." : "待計算"}</span>
+        <span className="text-xl font-bold text-[var(--accent)]">{expandedAmountText}</span>
       </div>
       <div className="mt-4 flex justify-end gap-3"><button onClick={() => setExpanded(false)} className="rounded-xl border border-[var(--border)] px-4 py-2.5 text-sm">收起</button>{canEdit && <button onClick={(event) => { event.stopPropagation(); onEdit?.(); }} className="rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white">修改</button>}</div>
     </div>}
