@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
+import { adminCookieName, isValidAdminToken } from "@/lib/admin-auth";
 
 function getTierPrice(product: { price: number | string | null; price_group_id: string | null }, groupQuantity: number, tiers: { price_group_id: string; min_quantity: number; max_quantity: number | null; unit_price: number | string }[]) {
   const basePrice = Number(product.price ?? 0);
