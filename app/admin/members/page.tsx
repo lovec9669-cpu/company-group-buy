@@ -17,16 +17,6 @@ function formatAmount(value: number) {
   return new Intl.NumberFormat("zh-TW", { style: "currency", currency: "TWD", maximumFractionDigits: 0 }).format(value);
 }
 
-function formatDate(value: string) {
-  return new Date(value).toLocaleString("zh-TW", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
 export default function MembersPage() {
   const [members, setMembers] = useState<Member[]>([]);
   const [deletedMembers, setDeletedMembers] = useState<Member[]>([]);
@@ -34,6 +24,10 @@ export default function MembersPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [confirming, setConfirming] = useState<Member | null>(null);
+  const [editing, setEditing] = useState<Member | null>(null);
+  const [editEmployeeId, setEditEmployeeId] = useState("");
+  const [editName, setEditName] = useState("");
+  const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [restoringId, setRestoringId] = useState<string | null>(null);
   const [undoMember, setUndoMember] = useState<Member | null>(null);
@@ -60,22 +54,62 @@ export default function MembersPage() {
   const sortedMembers = useMemo(() => {
     return [...members].sort((a, b) => {
       switch (sort) {
-        case "oldest":
-          return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-        case "amountHigh":
-          return b.totalAmount - a.totalAmount;
-        case "amountLow":
-          return a.totalAmount - b.totalAmount;
-        case "employeeHigh":
-          return b.employee_id.localeCompare(a.employee_id);
-        case "employeeLow":
-          return a.employee_id.localeCompare(b.employee_id);
+        case "oldest": return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+        case "amountHigh": return b.totalAmount - a.totalAmount;
+        case "amountLow": return a.totalAmount - b.totalAmount;
+        case "employeeHigh": return b.employee_id.localeCompare(a.employee_id);
+        case "employeeLow": return a.employee_id.localeCompare(b.employee_id);
         case "newest":
-        default:
-          return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+        default: return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
       }
     });
   }, [members, sort]);
+
+  function openEdit(member: Member) {
+    setEditing(member);
+    setEditEmployeeId(member.employee_id);
+    setEditName(member.name);
+    setError("");
+  }
+
+  function closeEdit() {
+    if (saving) return;
+    setEditing(null);
+    setEditEmployeeId("");
+    setEditName("");
+  }
+
+  async function saveEdit() {
+    if (!editing) return;
+    const employeeId = editEmployeeId.trim();
+    const name = editName.trim();
+    if (!employeeId || !name) {
+      setError("工號與姓名都不能空白");
+      return;
+    }
+
+    setSaving(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/admin/members/${editing.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ employee_id: employeeId, name }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "修改成員資料失敗");
+
+      const updated = result.data as Member;
+      setMembers((current) => current.map((member) => member.id === updated.id ? { ...member, ...updated } : member));
+      setEditing(null);
+      setEditEmployeeId("");
+      setEditName("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "修改成員資料失敗");
+    } finally {
+      setSaving(false);
+    }
+  }
 
   async function confirmDelete() {
     if (!confirming) return;
@@ -124,7 +158,7 @@ export default function MembersPage() {
         <header className="rounded-3xl bg-white p-6 shadow-sm">
           <p className="text-sm font-medium text-[var(--accent)]">Admin</p>
           <h1 className="mt-1 text-2xl font-bold">成員名單</h1>
-          <p className="mt-2 text-sm text-[var(--muted)]">工號、姓名與所有團購的累計金額。刪除採可恢復方式，不會直接清掉歷史訂單。</p>
+          <p className="mt-2 text-sm text-[var(--muted)]">工號、姓名與所有團購的累計金額。管理員可直接修正工號與姓名，避免打錯後只能刪除帳號。</p>
         </header>
 
         {undoMember && (
@@ -134,6 +168,10 @@ export default function MembersPage() {
               {restoringId === undoMember.id ? "恢復中..." : "立即恢復"}
             </button>
           </div>
+        )}
+
+        {error && (
+          <div className="mt-5 rounded-2xl bg-red-50 p-4 text-sm font-medium text-red-600">{error}</div>
         )}
 
         <section className="mt-6 overflow-hidden rounded-3xl border border-[var(--border)] bg-white shadow-sm">
@@ -157,7 +195,7 @@ export default function MembersPage() {
 
           {loading ? (
             <div className="p-8 text-center text-sm text-[var(--muted)]">正在讀取成員名單...</div>
-          ) : error ? (
+          ) : error && members.length === 0 ? (
             <div className="p-8 text-center text-sm font-medium text-red-600">{error}</div>
           ) : sortedMembers.length === 0 ? (
             <div className="p-8 text-center text-sm text-[var(--muted)]">目前還沒有成員資料。</div>
@@ -179,7 +217,10 @@ export default function MembersPage() {
                       <td className="px-6 py-4">{member.name}</td>
                       <td className="px-6 py-4 text-right font-semibold">{formatAmount(member.totalAmount)}</td>
                       <td className="px-6 py-4 text-right">
-                        <button onClick={() => setConfirming(member)} className="rounded-xl border border-red-200 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50">刪除成員</button>
+                        <div className="flex justify-end gap-2">
+                          <button onClick={() => openEdit(member)} className="rounded-xl border border-[var(--border)] px-3 py-2 text-sm font-medium hover:bg-[#f4f5f1]">編輯</button>
+                          <button onClick={() => setConfirming(member)} className="rounded-xl border border-red-200 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50">刪除成員</button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -224,6 +265,32 @@ export default function MembersPage() {
           </section>
         )}
       </div>
+
+      {editing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-5">
+          <div className="w-full max-w-md rounded-3xl bg-white p-7 shadow-2xl">
+            <p className="text-sm font-medium text-[var(--accent)]">編輯成員資料</p>
+            <h2 className="mt-2 text-xl font-bold">修正工號與姓名</h2>
+            <p className="mt-2 text-sm leading-6 text-[var(--muted)]">只會修改成員基本資料，不會刪除或重算這位成員既有的團購歷史。</p>
+
+            <div className="mt-6 space-y-4">
+              <label className="block">
+                <span className="mb-2 block text-sm font-semibold">工號</span>
+                <input value={editEmployeeId} onChange={(e) => setEditEmployeeId(e.target.value)} autoComplete="off" className="w-full rounded-xl border border-[var(--border)] px-4 py-3 outline-none focus:ring-2 focus:ring-[var(--accent)]/20" />
+              </label>
+              <label className="block">
+                <span className="mb-2 block text-sm font-semibold">姓名</span>
+                <input value={editName} onChange={(e) => setEditName(e.target.value)} autoComplete="off" className="w-full rounded-xl border border-[var(--border)] px-4 py-3 outline-none focus:ring-2 focus:ring-[var(--accent)]/20" />
+              </label>
+            </div>
+
+            <div className="mt-6 flex gap-3">
+              <button onClick={closeEdit} disabled={saving} className="flex-1 rounded-xl border border-[var(--border)] px-4 py-3">取消</button>
+              <button onClick={saveEdit} disabled={saving} className="flex-1 rounded-xl bg-[var(--accent)] px-4 py-3 font-semibold text-white disabled:opacity-50">{saving ? "儲存中..." : "儲存修改"}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {confirming && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-5">
