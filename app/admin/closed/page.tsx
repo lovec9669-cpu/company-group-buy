@@ -36,24 +36,20 @@ export default function ClosedGroupsPage() {
     }
   }
 
-  async function advance(group: Group) {
-    const next = group.status === "closed" ? "reviewing" : group.status === "reviewing" ? "awaiting_payment" : null;
-    if (!next) return;
-    const prompt = group.status === "closed"
-      ? `確定已確認「${group.name}」的訂單，開始後台計算嗎？`
-      : `確定已完成「${group.name}」的計算，要發布結果並移到「已完成待收款」嗎？`;
-    if (!window.confirm(prompt)) return;
+  async function publishResult(group: Group) {
+    if (group.status !== "closed" && group.status !== "reviewing") return;
+    if (!window.confirm(`確定要發布「${group.name}」的最終計算結果，並移到「已完成待收款」嗎？`)) return;
     setActionId(group.id);
     setError("");
     setMessage("");
     try {
-      const response = await fetch(`/api/admin/group-buys/${group.id}/status`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: next }) });
+      const response = await fetch(`/api/admin/group-buys/${group.id}/status`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "awaiting_payment" }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "更新團購狀態失敗");
-      setMessage(result.message ?? "團購狀態已更新");
+      if (!response.ok) throw new Error(result.error ?? "發布結果失敗");
+      setMessage(result.message ?? "已發布結果並移到已完成待收款");
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "更新團購狀態失敗");
+      setError(e instanceof Error ? e.message : "發布結果失敗");
     } finally {
       setActionId(null);
     }
@@ -67,7 +63,7 @@ export default function ClosedGroupsPage() {
         <header className="mb-8 rounded-3xl bg-white p-6 shadow-sm">
           <p className="text-sm font-medium text-[var(--accent)]">Admin</p>
           <h1 className="mt-1 text-2xl font-bold">截止團購</h1>
-          <p className="mt-2 text-sm text-[var(--muted)]">團購結束後會移到這裡。確認訂單後進入計算，發布結果後會移到「已完成待收款」。</p>
+          <p className="mt-2 text-sm text-[var(--muted)]">團購結束後會移到這裡。發布結果後會移到「已完成待收款」，並建立本次團購的最終金額。</p>
         </header>
 
         {message && <div className="mb-4 rounded-2xl bg-[#e8f3ef] p-4 text-sm font-medium text-[var(--accent)]">{message}</div>}
@@ -81,13 +77,12 @@ export default function ClosedGroupsPage() {
           <section className="space-y-4">
             {groups.map((group) => {
               const expanded = expandedId === group.id;
-              const reviewing = group.status === "reviewing";
               return (
                 <article key={group.id} className="overflow-hidden rounded-3xl bg-white shadow-sm">
                   <button type="button" onClick={() => setExpandedId(expanded ? null : group.id)} className="flex w-full items-center justify-between gap-4 p-6 text-left hover:bg-[#fafbf9]">
                     <div>
                       <h2 className="text-lg font-bold">{group.name}</h2>
-                      <p className="mt-1 text-sm text-[var(--muted)]">結束時間：{formatDate(group.end_at)} · {reviewing ? "後台計算中" : "待確認訂單"}</p>
+                      <p className="mt-1 text-sm text-[var(--muted)]">結束時間：{formatDate(group.end_at)} · 待發布結果</p>
                     </div>
                     <span className="shrink-0 rounded-xl border border-[var(--border)] px-4 py-2 text-sm font-medium">{expanded ? "收起" : "查看資料"}</span>
                   </button>
@@ -97,10 +92,10 @@ export default function ClosedGroupsPage() {
                       <div className="mb-5 flex flex-col gap-4 rounded-2xl bg-[#f4f5f1] p-5 md:flex-row md:items-center md:justify-between">
                         <div>
                           <p className="text-xs text-[var(--muted)]">目前流程狀態</p>
-                          <p className="mt-1 text-lg font-bold">{reviewing ? "後台計算中" : "截止，待確認訂單"}</p>
+                          <p className="mt-1 text-lg font-bold">待發布結果</p>
                         </div>
-                        <button disabled={actionId === group.id} onClick={() => advance(group)} className="rounded-xl bg-[var(--accent)] px-5 py-3 text-sm font-semibold text-white disabled:opacity-50">
-                          {actionId === group.id ? "處理中…" : reviewing ? "發布結果並移到待收款" : "確認訂單並開始計算"}
+                        <button disabled={actionId === group.id} onClick={() => publishResult(group)} className="rounded-xl bg-[var(--accent)] px-5 py-3 text-sm font-semibold text-white disabled:opacity-50">
+                          {actionId === group.id ? "處理中…" : "發布結果並移到待收款"}
                         </button>
                       </div>
 
