@@ -4,7 +4,7 @@ import { getSupabaseAdmin } from "@/lib/supabase-admin";
 import { adminCookieName, isValidAdminToken } from "@/lib/admin-auth";
 
 const transitions: Record<string, { next: string; message: string }> = {
-  closed: { next: "reviewing", message: "已確認訂單，開始計算中。" },
+  closed: { next: "awaiting_payment", message: "已發布計算結果，團購已移至「已完成待收款」。" },
   reviewing: { next: "awaiting_payment", message: "已發布計算結果，團購已移至「已完成待收款」。" },
 };
 
@@ -30,10 +30,10 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     if (findError || !group) return NextResponse.json({ error: "找不到這個團購" }, { status: 404 });
 
     const transition = transitions[String(group.status)];
-    if (!transition || requestedStatus !== transition.next) return NextResponse.json({ error: "目前團購狀態不允許這個操作" }, { status: 400 });
+    if (!transition || requestedStatus !== transition.next) return NextResponse.json({ error: "目前團購狀態不允許發布結果" }, { status: 400 });
 
-    // 從「後台計算中」發布成「已完成待收款」時，把最終單價與金額正式寫入訂單明細。
-    if (group.status === "reviewing" && transition.next === "awaiting_payment") {
+    // 發布結果時一次完成最終單價、數量與金額計算，然後移到「已完成待收款」。
+    if (transition.next === "awaiting_payment") {
       const { data: products, error: productError } = await supabase.from("products").select("id,price,price_group_id").eq("group_buy_id", id);
       if (productError) throw productError;
       const productMap = new Map((products ?? []).map((product) => [product.id, product]));
@@ -72,11 +72,11 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       }
     }
 
-    const { data, error } = await supabase.from("group_buys").update({ status: transition.next }).eq("id", id).select("id,name,status,start_at,end_at,created_at").single();
+    const { data, error } = await supabase.from("group_buys").update({ status: "awaiting_payment" }).eq("id", id).in("status", ["closed", "reviewing"]).select("id,name,status,start_at,end_at,created_at").single();
     if (error) throw error;
     return NextResponse.json({ data, message: transition.message });
   } catch (error) {
     console.error("PATCH /api/admin/group-buys/[id]/status", error);
-    return NextResponse.json({ error: error instanceof Error ? error.message : "更新團購狀態失敗" }, { status: 500 });
+    return NextResponse.json({ error: error instanceof Error ? error.message : "發布結果失敗" }, { status: 500 });
   }
 }
