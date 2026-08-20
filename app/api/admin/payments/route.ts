@@ -66,7 +66,7 @@ export async function GET() {
       const groupQuantities = new Map<string, number>();
       for (const item of rawItems) {
         const product = productMap.get(item.productId);
-        if (product?.price_group_id) groupQuantities.set(product.price_group_id, (groupQuantities.get(product.price_group_id) ?? 0) + item.quantity);
+        if (product?.price_group_id) groupQuantities.set(product.price_group_id, (groupQuantities.get(product.price_group_id) ?? 0) + (item.finalQuantity ?? item.quantity));
       }
 
       const memberResult = new Map<string, { memberId: string; orderId: string; employeeId: string; name: string; totalAmount: number; paid: boolean }>();
@@ -102,6 +102,35 @@ export async function PATCH(request: Request) {
     const supabase = getSupabaseAdmin();
     const type = String(body.type ?? "");
 
+    if (type === "members") {
+      const groupBuyId = String(body.groupBuyId ?? "").trim();
+      const updates = Array.isArray(body.updates) ? body.updates : [];
+      if (!groupBuyId) return NextResponse.json({ error: "缺少團購編號" }, { status: 400 });
+      if (!updates.length) return NextResponse.json({ error: "沒有需要儲存的付款狀態" }, { status: 400 });
+
+      const { data: group, error: groupError } = await supabase.from("group_buys").select("status").eq("id", groupBuyId).single();
+      if (groupError || !group) return NextResponse.json({ error: "找不到團購" }, { status: 404 });
+      if (group.status !== "awaiting_payment") return NextResponse.json({ error: "這筆團購目前不在待收款狀態" }, { status: 400 });
+
+      const orderIds = updates.map((item: { orderId?: unknown }) => String(item.orderId ?? "").trim()).filter(Boolean);
+      const uniqueOrderIds = [...new Set(orderIds)];
+      if (!uniqueOrderIds.length || uniqueOrderIds.length !== updates.length) return NextResponse.json({ error: "付款狀態資料格式不正確" }, { status: 400 });
+
+      const { data: orders, error: orderError } = await supabase.from("orders").select("id,group_buy_id").in("id", uniqueOrderIds);
+      if (orderError) throw orderError;
+      const validOrderIds = new Set((orders ?? []).filter((order) => order.group_buy_id === groupBuyId).map((order) => order.id));
+      if (validOrderIds.size !== uniqueOrderIds.length) return NextResponse.json({ error: "付款狀態中包含不屬於此團購的訂單" }, { status: 400 });
+
+      await Promise.all(updates.map(async (item: { orderId?: unknown; paid?: unknown }) => {
+        const orderId = String(item.orderId ?? "").trim();
+        const paid = Boolean(item.paid);
+        const { error: updateError } = await supabase.from("orders").update({ paid_at: paid ? new Date().toISOString() : null }).eq("id", orderId).eq("group_buy_id", groupBuyId);
+        if (updateError) throw updateError;
+      }));
+
+      return NextResponse.json({ message: "付款狀態已儲存" });
+    }
+
     if (type === "member") {
       const orderId = String(body.orderId ?? "").trim();
       const paid = Boolean(body.paid);
@@ -124,7 +153,7 @@ export async function PATCH(request: Request) {
       const { data: orders, error: orderError } = await supabase.from("orders").select("id,paid_at").eq("group_buy_id", groupBuyId);
       if (orderError) throw orderError;
       const unpaid = (orders ?? []).filter((order) => !order.paid_at);
-      if (unpaid.length) return NextResponse.json({ error: `仍有 ${unpaid.length} 人尚未付款，請全部切換為 ON 後再移到歷史團購。` }, { status: 400 });
+      if (unpaid.length) return NextResponse.json({ error: `仍有 ${unpaid.length} 人尚未付款，請先儲存所有人的付款狀態為 ON。` }, { status: 400 });
       const { error: updateError } = await supabase.from("group_buys").update({ status: "finalized" }).eq("id", groupBuyId).eq("status", "awaiting_payment");
       if (updateError) throw updateError;
       return NextResponse.json({ message: "所有人已付款，團購已移到歷史團購。" });
