@@ -37,9 +37,11 @@ export default function ClosedGroupsPage() {
   }
 
   async function advance(group: Group) {
-    const next = group.status === "closed" ? "reviewing" : group.status === "reviewing" ? "finalized" : null;
+    const next = group.status === "closed" ? "reviewing" : group.status === "reviewing" ? "awaiting_payment" : null;
     if (!next) return;
-    const prompt = group.status === "closed" ? `確定已確認「${group.name}」的訂單，開始後台計算嗎？` : `確定已完成「${group.name}」的計算，要發布結果並移到歷史團購嗎？`;
+    const prompt = group.status === "closed"
+      ? `確定已確認「${group.name}」的訂單，開始後台計算嗎？`
+      : `確定已完成「${group.name}」的計算，要發布結果並移到「已完成待收款」嗎？`;
     if (!window.confirm(prompt)) return;
     setActionId(group.id);
     setError("");
@@ -65,7 +67,7 @@ export default function ClosedGroupsPage() {
         <header className="mb-8 rounded-3xl bg-white p-6 shadow-sm">
           <p className="text-sm font-medium text-[var(--accent)]">Admin</p>
           <h1 className="mt-1 text-2xl font-bold">截止團購</h1>
-          <p className="mt-2 text-sm text-[var(--muted)]">團購結束後會移到這裡。確認訂單後進入計算，發布完成後才會移到歷史團購。</p>
+          <p className="mt-2 text-sm text-[var(--muted)]">團購結束後會移到這裡。確認訂單後進入計算，發布結果後會移到「已完成待收款」。</p>
         </header>
 
         {message && <div className="mb-4 rounded-2xl bg-[#e8f3ef] p-4 text-sm font-medium text-[var(--accent)]">{message}</div>}
@@ -80,7 +82,6 @@ export default function ClosedGroupsPage() {
             {groups.map((group) => {
               const expanded = expandedId === group.id;
               const reviewing = group.status === "reviewing";
-              const amountLabel = group.status === "finalized" ? "金額" : "金額（預估）";
               return (
                 <article key={group.id} className="overflow-hidden rounded-3xl bg-white shadow-sm">
                   <button type="button" onClick={() => setExpandedId(expanded ? null : group.id)} className="flex w-full items-center justify-between gap-4 p-6 text-left hover:bg-[#fafbf9]">
@@ -99,7 +100,7 @@ export default function ClosedGroupsPage() {
                           <p className="mt-1 text-lg font-bold">{reviewing ? "後台計算中" : "截止，待確認訂單"}</p>
                         </div>
                         <button disabled={actionId === group.id} onClick={() => advance(group)} className="rounded-xl bg-[var(--accent)] px-5 py-3 text-sm font-semibold text-white disabled:opacity-50">
-                          {actionId === group.id ? "處理中…" : reviewing ? "發布計算完成並移至歷史團購" : "確認訂單並開始計算"}
+                          {actionId === group.id ? "處理中…" : reviewing ? "發布結果並移到待收款" : "確認訂單並開始計算"}
                         </button>
                       </div>
 
@@ -113,9 +114,7 @@ export default function ClosedGroupsPage() {
                         <div className="rounded-2xl border border-dashed border-[var(--border)] p-6 text-center text-sm text-[var(--muted)]">目前沒有訂購資料。</div>
                       ) : (
                         <div className="overflow-hidden rounded-2xl border border-[var(--border)]">
-                          <div className="grid grid-cols-[180px_minmax(0,1fr)_100px_130px] bg-[#f4f5f1] px-5 py-3 text-sm font-semibold">
-                            <div>姓名</div><div>商品</div><div className="text-right">數量</div><div className="text-right">{amountLabel}</div>
-                          </div>
+                          <div className="grid grid-cols-[180px_minmax(0,1fr)_100px_130px] bg-[#f4f5f1] px-5 py-3 text-sm font-semibold"><div>姓名</div><div>商品</div><div className="text-right">數量</div><div className="text-right">金額</div></div>
                           {group.memberOrders.map((memberOrder) => (
                             <div key={memberOrder.memberId}>
                               {memberOrder.items.map((item, index) => (
@@ -126,15 +125,10 @@ export default function ClosedGroupsPage() {
                                   <div className="text-right font-semibold">$ {formatMoney(item.amount)}</div>
                                 </div>
                               ))}
-                              <div className="grid grid-cols-[180px_minmax(0,1fr)_100px_130px] border-t border-[var(--border)] bg-[#fafbf9] px-5 py-3 text-sm">
-                                <div></div><div></div><div className="text-right font-semibold">小計</div><div className="text-right font-bold text-[var(--accent)]">$ {formatMoney(memberOrder.totalAmount)}</div>
-                              </div>
+                              <div className="grid grid-cols-[180px_minmax(0,1fr)_100px_130px] border-t border-[var(--border)] bg-[#fafbf9] px-5 py-3 text-sm"><div></div><div></div><div className="text-right font-semibold">小計</div><div className="text-right font-bold text-[var(--accent)]">$ {formatMoney(memberOrder.totalAmount)}</div></div>
                             </div>
                           ))}
-                          <div className="flex items-center justify-between border-t border-[var(--border)] bg-[#f4f5f1] px-5 py-4">
-                            <span className="font-bold">全部訂單金額</span>
-                            <span className="text-lg font-bold text-[var(--accent)]">$ {formatMoney(group.totalAmount)}</span>
-                          </div>
+                          <div className="flex items-center justify-between border-t border-[var(--border)] bg-[#f4f5f1] px-5 py-4"><span className="font-bold">全部訂單金額</span><span className="text-lg font-bold text-[var(--accent)]">$ {formatMoney(group.totalAmount)}</span></div>
                         </div>
                       )}
                     </div>
