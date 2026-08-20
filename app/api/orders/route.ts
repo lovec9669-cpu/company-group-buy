@@ -41,12 +41,22 @@ export async function POST(request: Request) {
 
     const { data: group, error: groupError } = await supabase
       .from("group_buys")
-      .select("id,status,end_at")
+      .select("id,status,start_at,end_at")
       .eq("id", groupBuyId)
       .single();
     if (groupError) throw groupError;
     if (!group) return NextResponse.json({ error: "找不到團購" }, { status: 404 });
-    if (group.status !== "open" || new Date(group.end_at).getTime() <= Date.now()) {
+
+    const now = Date.now();
+    const startAt = new Date(group.start_at).getTime();
+    const endAt = new Date(group.end_at).getTime();
+    if (group.status !== "open") {
+      return NextResponse.json({ error: "團購目前無法下單" }, { status: 400 });
+    }
+    if (startAt > now) {
+      return NextResponse.json({ error: `團購尚未開始，開始時間：${new Date(group.start_at).toLocaleString("zh-TW", { timeZone: "Asia/Taipei" })}` }, { status: 400 });
+    }
+    if (endAt <= now) {
       return NextResponse.json({ error: "團購已截止，無法下單" }, { status: 400 });
     }
 
