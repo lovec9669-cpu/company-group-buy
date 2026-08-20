@@ -125,6 +125,33 @@ export default function HistoryPage() {
     }
   }
 
+  async function deleteHistoryGroup(group: HistoryGroup) {
+    const confirmed = window.confirm(
+      `確定要刪除歷史團購「${group.name}」嗎？\n\n這會同時刪除這次團購的商品、訂單與訂單明細，刪除後無法復原。`,
+    );
+    if (!confirmed) return;
+
+    setActionId(group.id);
+    setError("");
+    setMessage("");
+
+    try {
+      const response = await fetch(`/api/admin/group-buys/${group.id}`, {
+        method: "DELETE",
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "刪除團購失敗");
+
+      if (expandedId === group.id) setExpandedId(null);
+      setMessage(result.message ?? "歷史團購已刪除");
+      await loadHistory();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "刪除團購失敗");
+    } finally {
+      setActionId(null);
+    }
+  }
+
   useEffect(() => {
     loadHistory();
   }, []);
@@ -136,7 +163,7 @@ export default function HistoryPage() {
           <p className="text-sm font-medium text-[var(--accent)]">Admin</p>
           <h1 className="mt-1 text-2xl font-bold">歷史團購</h1>
           <p className="mt-2 text-sm text-[var(--muted)]">
-            團購截止後，先確認訂單，再完成後台計算，最後發布結果。
+            團購截止後，先確認訂單，再完成後台計算，最後發布結果。已完成的歷史團購可以刪除。
           </p>
         </header>
 
@@ -168,6 +195,7 @@ export default function HistoryPage() {
           <section className="space-y-4">
             {groups.map((group) => {
               const expanded = expandedId === group.id;
+              const deleting = actionId === group.id;
 
               return (
                 <article key={group.id} className="overflow-hidden rounded-3xl bg-white shadow-sm">
@@ -202,31 +230,42 @@ export default function HistoryPage() {
                           <p className="mt-1 text-lg font-bold">{statusLabel(group.status)}</p>
                         </div>
 
-                        {group.status === "closed" && (
-                          <button
-                            disabled={actionId === group.id}
-                            onClick={() => advanceStatus(group)}
-                            className="rounded-xl bg-[var(--accent)] px-5 py-3 text-sm font-semibold text-white disabled:opacity-50"
-                          >
-                            {actionId === group.id ? "處理中…" : "確認訂單並開始計算"}
-                          </button>
-                        )}
+                        <div className="flex flex-wrap gap-3">
+                          {group.status === "closed" && (
+                            <button
+                              disabled={actionId === group.id}
+                              onClick={() => advanceStatus(group)}
+                              className="rounded-xl bg-[var(--accent)] px-5 py-3 text-sm font-semibold text-white disabled:opacity-50"
+                            >
+                              {actionId === group.id ? "處理中…" : "確認訂單並開始計算"}
+                            </button>
+                          )}
 
-                        {group.status === "reviewing" && (
-                          <button
-                            disabled={actionId === group.id}
-                            onClick={() => advanceStatus(group)}
-                            className="rounded-xl bg-[var(--accent)] px-5 py-3 text-sm font-semibold text-white disabled:opacity-50"
-                          >
-                            {actionId === group.id ? "發布中…" : "發布計算完成"}
-                          </button>
-                        )}
+                          {group.status === "reviewing" && (
+                            <button
+                              disabled={actionId === group.id}
+                              onClick={() => advanceStatus(group)}
+                              className="rounded-xl bg-[var(--accent)] px-5 py-3 text-sm font-semibold text-white disabled:opacity-50"
+                            >
+                              {actionId === group.id ? "發布中…" : "發布計算完成"}
+                            </button>
+                          )}
 
-                        {group.status === "finalized" && (
-                          <span className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-[var(--accent)]">
-                            已發布，首頁可查看總金額
-                          </span>
-                        )}
+                          {group.status === "finalized" && (
+                            <>
+                              <span className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-[var(--accent)]">
+                                已發布，首頁可查看總金額
+                              </span>
+                              <button
+                                disabled={deleting}
+                                onClick={() => deleteHistoryGroup(group)}
+                                className="rounded-xl border border-red-200 bg-white px-5 py-3 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50"
+                              >
+                                {deleting ? "刪除中…" : "刪除團購"}
+                              </button>
+                            </>
+                          )}
+                        </div>
                       </div>
 
                       <div className="mb-5 grid gap-3 md:grid-cols-3">
