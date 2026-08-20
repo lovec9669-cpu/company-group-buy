@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 
 const items = [
   { href: "/admin", label: "新建團購" },
+  { href: "/admin/active", label: "進行中的團購" },
   { href: "/admin/closed", label: "截止團購" },
   { href: "/admin/history", label: "歷史團購" },
   { href: "/admin/members", label: "成員名單" },
