@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
-import { adminCookieName, isValidAdminToken } from "@/lib/admin-auth";
 
 function getTierPrice(product: { price: number | string | null; price_group_id: string | null }, groupQuantity: number, tiers: { price_group_id: string; min_quantity: number; max_quantity: number | null; unit_price: number | string }[]) {
   const basePrice = Number(product.price ?? 0);
@@ -25,7 +24,7 @@ export async function GET(request: Request) {
     }
     const url = new URL(request.url);
     const requestedStatus = url.searchParams.get("status");
-    const statusFilter = requestedStatus === "closed" ? ["closed", "reviewing"] : ["finalized"];
+    const statusFilter = requestedStatus === "closed" ? ["closed", "reviewing"] : requestedStatus === "awaiting_payment" ? ["awaiting_payment"] : ["finalized"];
     const { data: groups, error: groupError } = await supabase.from("group_buys").select("id,name,description,start_at,end_at,status,created_at").in("status", statusFilter).order("end_at", { ascending: false });
     if (groupError) throw groupError;
     const result = [];
