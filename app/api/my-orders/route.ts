@@ -22,6 +22,110 @@ function getTierPrice(
   return tier ? Number(tier.unit_price) : basePrice;
 }
 
+type HistoryItem = {
+  productId: string;
+  productName: string;
+  unit: string;
+  quantity: number;
+  finalAmount: number;
+};
+
+type HistorySummary = {
+  participantCount: number;
+  totalAmount: number;
+  items: HistoryItem[];
+};
+
+async function getHistorySummary(groupBuyId: string): Promise<HistorySummary> {
+  const supabase = getSupabaseAdmin();
+
+  const { data: allOrders, error: allOrdersError } = await supabase
+    .from("orders")
+    .select("id,member_id")
+    .eq("group_buy_id", groupBuyId);
+  if (allOrdersError) throw allOrdersError;
+
+  const participantCount = new Set((allOrders ?? []).map((order) => order.member_id).filter(Boolean)).size;
+  const orderIds = (allOrders ?? []).map((order) => order.id);
+  if (!orderIds.length) return { participantCount: 0, totalAmount: 0, items: [] };
+
+  const { data: allItems, error: allItemsError } = await supabase
+    .from("order_items")
+    .select("order_id,product_id,quantity,final_quantity,final_unit_price,final_amount")
+    .in("order_id", orderIds);
+  if (allItemsError) throw allItemsError;
+
+  const productIds = [...new Set((allItems ?? []).map((item) => item.product_id))];
+  if (!productIds.length) return { participantCount, totalAmount: 0, items: [] };
+
+  const { data: products, error: productsError } = await supabase
+    .from("products")
+    .select("id,name,unit,price,price_group_id")
+    .in("id", productIds);
+  if (productsError) throw productsError;
+
+  const productMap = new Map((products ?? []).map((product) => [product.id, product]));
+  const priceGroupIds = [...new Set((products ?? []).map((product) => product.price_group_id).filter((id): id is string => Boolean(id)))];
+
+  let tiers: { price_group_id: string; min_quantity: number; max_quantity: number | null; unit_price: number | string }[] = [];
+  if (priceGroupIds.length) {
+    const { data: tierRows, error: tierError } = await supabase
+      .from("group_buy_price_tiers")
+      .select("price_group_id,min_quantity,max_quantity,unit_price")
+      .in("price_group_id", priceGroupIds);
+    if (tierError) throw tierError;
+    tiers = tierRows ?? [];
+  }
+
+  const groupQuantities = new Map<string, number>();
+  for (const item of allItems ?? []) {
+    const product = productMap.get(item.product_id);
+    if (!product?.price_group_id) continue;
+    const quantity = Number(item.final_quantity ?? item.quantity ?? 0);
+    groupQuantities.set(
+      product.price_group_id,
+      (groupQuantities.get(product.price_group_id) ?? 0) + quantity,
+    );
+  }
+
+  const aggregated = new Map<string, HistoryItem>();
+  for (const item of allItems ?? []) {
+    const product = productMap.get(item.product_id);
+    if (!product) continue;
+
+    const quantity = Number(item.final_quantity ?? item.quantity ?? 0);
+    const calculatedUnitPrice = getTierPrice(
+      product,
+      groupQuantities.get(product.price_group_id ?? "") ?? 0,
+      tiers,
+    );
+    const amount = item.final_amount == null
+      ? quantity * (item.final_unit_price == null ? calculatedUnitPrice : Number(item.final_unit_price))
+      : Number(item.final_amount);
+
+    const existing = aggregated.get(product.id);
+    if (existing) {
+      existing.quantity += quantity;
+      existing.finalAmount += amount;
+    } else {
+      aggregated.set(product.id, {
+        productId: product.id,
+        productName: product.name,
+        unit: product.unit ?? "",
+        quantity,
+        finalAmount: amount,
+      });
+    }
+  }
+
+  const items = [...aggregated.values()];
+  return {
+    participantCount,
+    totalAmount: items.reduce((sum, item) => sum + item.finalAmount, 0),
+    items,
+  };
+}
+
 export async function GET(request: Request) {
   try {
     const employeeId = new URL(request.url).searchParams.get("employeeId")?.trim() ?? "";
@@ -72,6 +176,7 @@ export async function GET(request: Request) {
       group: { id: string; name: string; description: string | null; start_at: string; end_at: string; status: string } | null;
       items: { productId: string; productName: string; unit: string; quantity: number; finalAmount: number | null }[];
       isFinalized: boolean;
+      history: HistorySummary | null;
     }> = [];
 
     for (const order of orders ?? []) {
@@ -94,8 +199,6 @@ export async function GET(request: Request) {
       const productMap = new Map((products ?? []).map((p) => [p.id, p]));
 
       // 歷史團購的最終價格由後台依「全體員工在同一價格群組的總數量」計算。
-      // 新流程會把結果寫入 order_items；這裡保留相同的後端計算作為既有資料的回填，
-      // 因此過去已發布但尚未寫入 final_amount 的訂單也能正確顯示金額。
       const priceGroupIds = [...new Set((products ?? []).map((p) => p.price_group_id).filter((id): id is string => Boolean(id)))];
       let tiers: { price_group_id: string; min_quantity: number; max_quantity: number | null; unit_price: number | string }[] = [];
       if (priceGroupIds.length) {
@@ -119,7 +222,7 @@ export async function GET(request: Request) {
         if (allOrderIds.length) {
           const { data: allItems, error: allItemsError } = await supabase
             .from("order_items")
-            .select("product_id,quantity")
+            .select("product_id,quantity,final_quantity")
             .in("order_id", allOrderIds);
           if (allItemsError) throw allItemsError;
 
@@ -135,7 +238,7 @@ export async function GET(request: Request) {
             if (!product?.price_group_id) continue;
             groupQuantities.set(
               product.price_group_id,
-              (groupQuantities.get(product.price_group_id) ?? 0) + Number(item.quantity ?? 0),
+              (groupQuantities.get(product.price_group_id) ?? 0) + Number(item.final_quantity ?? item.quantity ?? 0),
             );
           }
         }
@@ -167,12 +270,12 @@ export async function GET(request: Request) {
         group,
         items: orderItems,
         isFinalized: group?.status === "finalized",
+        history: group?.status === "finalized" ? await getHistorySummary(group.id) : null,
       });
     }
 
     // 首頁的「截止的訂單／歷史訂單」要與後台的團購清單同步。
-    // 即使某位員工沒有在該團購下單，團購本身仍應出現在對應區域，
-    // 避免首頁只靠 orders 表而漏掉後台已經截止或完成的團購。
+    // 即使某位員工沒有在該團購下單，團購本身仍應出現在對應區域。
     const { data: closedAndHistoryGroups, error: groupListError } = await supabase
       .from("group_buys")
       .select("id,name,description,start_at,end_at,status,created_at")
@@ -191,6 +294,7 @@ export async function GET(request: Request) {
         group,
         items: [],
         isFinalized: group.status === "finalized",
+        history: group.status === "finalized" ? await getHistorySummary(group.id) : null,
       });
     }
 
