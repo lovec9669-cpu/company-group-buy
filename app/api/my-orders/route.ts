@@ -265,9 +265,15 @@ export async function GET(request: Request) {
         };
       });
 
+      // awaiting_payment 在會員首頁仍視為「截止的訂單」。
+      // 真正進入歷史訂單只在後台完成收款並轉成 finalized 後發生。
+      const displayGroup = group?.status === "awaiting_payment"
+        ? { ...group, status: "closed" }
+        : group;
+
       result.push({
         ...order,
-        group,
+        group: displayGroup,
         items: orderItems,
         isFinalized: group?.status === "finalized",
         history: group?.status === "finalized" ? await getHistorySummary(group.id) : null,
@@ -275,11 +281,12 @@ export async function GET(request: Request) {
     }
 
     // 首頁的「截止的訂單／歷史訂單」要與後台的團購清單同步。
+    // awaiting_payment 仍留在會員首頁的「截止的訂單」，只有 finalized 才進入「歷史訂單」。
     // 即使某位員工沒有在該團購下單，團購本身仍應出現在對應區域。
     const { data: closedAndHistoryGroups, error: groupListError } = await supabase
       .from("group_buys")
       .select("id,name,description,start_at,end_at,status,created_at")
-      .in("status", ["closed", "reviewing", "finalized"])
+      .in("status", ["closed", "reviewing", "awaiting_payment", "finalized"])
       .order("end_at", { ascending: false });
     if (groupListError) throw groupListError;
 
@@ -287,11 +294,16 @@ export async function GET(request: Request) {
 
     for (const group of closedAndHistoryGroups ?? []) {
       if (existingGroupIds.has(group.id)) continue;
+
+      const displayGroup = group.status === "awaiting_payment"
+        ? { ...group, status: "closed" }
+        : group;
+
       result.push({
         id: `group-${group.id}`,
         group_buy_id: group.id,
         created_at: group.created_at,
-        group,
+        group: displayGroup,
         items: [],
         isFinalized: group.status === "finalized",
         history: group.status === "finalized" ? await getHistorySummary(group.id) : null,
