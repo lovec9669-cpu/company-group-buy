@@ -57,7 +57,10 @@ export async function GET() {
       if (closeError) throw closeError;
     }
 
-    const normalized = (data ?? []).map((group) => openExpired.includes(group.id) ? { ...group, status: "closed" } : group);
+    // 團員端只顯示已經到開始時間的團購。尚未開始的團購會等到 start_at 到達後才出現在可參加清單。
+    const normalized = (data ?? [])
+      .filter((group) => new Date(group.start_at).getTime() <= now)
+      .map((group) => openExpired.includes(group.id) ? { ...group, status: "closed" } : group);
     return NextResponse.json({ data: normalized });
   } catch (error) {
     console.error("GET /api/group-buys", error);
